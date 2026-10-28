@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agentic AI Chatbot</title>
+    <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="container">
+        <aside class="sidebar">
+            <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
+            <div class="history" id="chatHistory"></div>
+        </aside>
+        <main class="chat-area">
+            <div class="messages" id="messageContainer">
+                <div class="welcome-screen">
+                    <h1>How can I help you today?</h1>
+                </div>
+            </div>
+            <div class="input-container">
+                <div class="input-wrapper">
+                    <textarea id="userInput" placeholder="Message Agentic AI..." rows="1"></textarea>
+                    <button id="sendBtn">
+                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+                    </button>
+                </div>
+                <p class="disclaimer">Agentic AI can make mistakes. Check important info.</p>
+            </div>
+        </main>
+    </div>
+    <script src="/static/script.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+{
+  "name": "agentic-chatbot",
+  "runtime": "PYTHON_3_12",
+  "entryPoint": ["runtime_entrypoint.py"],
+  "protocol": "HTTP",
+  "port": 8080,
+  "healthCheckPath": "/ping",
+  "invocationPath": "/invocations"
+}
