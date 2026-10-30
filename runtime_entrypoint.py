@@ -32,11 +32,11 @@ STATIC_DIR = BASE_DIR / "static"
 app = BedrockAgentCoreApp()
 
 
-async def _run_agent(prompt: str, session_id: str) -> str:
+async def _run_agent(prompt: str, session_id: str, agent_key: str | None = None) -> str:
     """Execute the orchestrator and record monitoring metrics."""
     start = time.time()
     try:
-        answer = await orchestrator.route_query(session_id, prompt)
+        answer = await orchestrator.route_query(session_id, prompt, agent_key=agent_key)
         monitoring.record_invocation(
             status="success",
             query=prompt,
@@ -67,12 +67,13 @@ async def invoke(payload, context):
     payload = payload or {}
     prompt = payload.get("prompt") or payload.get("message") or ""
     session_id = payload.get("session_id") or str(uuid.uuid4())
+    agent_key = payload.get("agent")
 
     if not str(prompt).strip():
         return {"error": "Missing 'prompt' in payload."}
 
     try:
-        answer = await _run_agent(str(prompt), session_id)
+        answer = await _run_agent(str(prompt), session_id, agent_key=agent_key)
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -93,12 +94,13 @@ async def chat(request: Request) -> JSONResponse:
 
     message = payload.get("message") or payload.get("prompt") or ""
     session_id = payload.get("session_id") or str(uuid.uuid4())
+    agent_key = payload.get("agent")
 
     if not str(message).strip():
         return JSONResponse({"detail": "Missing 'message'."}, status_code=400)
 
     try:
-        response_text = await _run_agent(str(message), session_id)
+        response_text = await _run_agent(str(message), session_id, agent_key=agent_key)
     except Exception as e:
         return JSONResponse({"detail": str(e)}, status_code=500)
 

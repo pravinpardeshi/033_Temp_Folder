@@ -1,35 +1,158 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Agentic AI Chatbot</title>
+    <meta name="color-scheme" content="dark light">
+    <title>AgentCore · ServiceNOW Copilot</title>
     <link rel="icon" href="/favicon.ico" type="image/svg+xml">
+    <script>
+        (function () {
+            try {
+                var stored = localStorage.getItem('agentcore.theme');
+                var theme = stored || (window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+                document.documentElement.setAttribute('data-theme', theme);
+                document.documentElement.setAttribute('data-sidebar', localStorage.getItem('agentcore.sidebar') === 'collapsed' ? 'collapsed' : 'expanded');
+            } catch (e) {
+                document.documentElement.setAttribute('data-theme', 'dark');
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-    <div class="container">
-        <aside class="sidebar">
-            <button class="new-chat-btn" id="newChatBtn">+ New Chat</button>
-            <div class="history" id="chatHistory"></div>
-        </aside>
-        <main class="chat-area">
-            <div class="messages" id="messageContainer">
-                <div class="welcome-screen">
-                    <h1>How can I help you today?</h1>
+    <div class="app">
+        <aside class="sidebar" id="sidebar" aria-label="Navigation">
+            <div class="sidebar-head">
+                <div class="brand">
+                    <span class="brand-mark">AI</span>
+                    <span class="brand-text">
+                        <strong>AgentCore</strong>
+                        <small>ServiceNOW Copilot</small>
+                    </span>
                 </div>
-            </div>
-            <div class="input-container">
-                <div class="input-wrapper">
-                    <textarea id="userInput" placeholder="Message Agentic AI..." rows="1"></textarea>
-                    <button id="sendBtn">
-                        <svg viewBox="0 0 24 24" width="24" height="24"><path fill="currentColor" d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path></svg>
+                <div class="head-actions">
+                    <button class="icon-btn collapse-btn" id="collapseBtn" aria-label="Collapse sidebar" aria-controls="sidebar" aria-expanded="true">
+                        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M15.4 7.4 14 6l-6 6 6 6 1.4-1.4L10.8 12z"/></svg>
+                    </button>
+                    <button class="icon-btn mobile-only" id="closeSidebar" aria-label="Close menu">
+                        <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M18.3 5.7 12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7 4.3 4.3 10.6 10.6 16.9 4.3z"/></svg>
                     </button>
                 </div>
-                <p class="disclaimer">Agentic AI can make mistakes. Check important info.</p>
             </div>
+
+            <button class="new-chat" id="newChatBtn" title="New chat">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+                <span>New chat</span>
+            </button>
+
+            <div class="section-label">Agents</div>
+            <div class="agent-list" id="agentList" role="radiogroup" aria-label="Choose an agent">
+                <button class="agent-item" data-agent="chat" role="radio" title="Chat — General assistant">
+                    <span class="agent-icon chat">C</span>
+                    <span class="agent-copy">
+                        <strong>Chat</strong>
+                        <small>General assistant</small>
+                    </span>
+                </button>
+                <button class="agent-item" data-agent="snow" role="radio" title="SNOW — Closed incident Q&A">
+                    <span class="agent-icon snow">S</span>
+                    <span class="agent-copy">
+                        <strong>SNOW</strong>
+                        <small>Closed incident Q&amp;A</small>
+                    </span>
+                </button>
+                <button class="agent-item" data-agent="rca" role="radio" title="RCA — Root cause analysis">
+                    <span class="agent-icon rca">R</span>
+                    <span class="agent-copy">
+                        <strong>RCA</strong>
+                        <small>Root cause analysis</small>
+                    </span>
+                </button>
+            </div>
+
+            <div class="section-label history-label">
+                <span>History</span>
+                <button class="link-btn" id="clearHistoryBtn" title="Delete all conversations">Clear</button>
+            </div>
+            <div class="history" id="historyList"></div>
+
+            <div class="sidebar-foot">
+                <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
+                    <span class="theme-icon" id="themeIcon" aria-hidden="true"></span>
+                    <span id="themeLabel">Dark mode</span>
+                    <span class="switch" aria-hidden="true"><span class="switch-knob"></span></span>
+                </button>
+                <div class="runtime-status" id="runtimeStatus">
+                    <span class="dot" id="statusDot"></span>
+                    <span id="statusText">Checking runtime…</span>
+                </div>
+            </div>
+        </aside>
+
+        <div class="backdrop" id="backdrop" hidden></div>
+
+        <main class="main">
+            <header class="topbar">
+                <button class="icon-btn mobile-only" id="menuBtn" aria-label="Open menu">
+                    <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+                </button>
+                <button class="icon-btn expand-btn" id="expandBtn" aria-label="Expand sidebar" aria-controls="sidebar" aria-expanded="true">
+                    <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8.6 7.4 10 6l6 6-6 6-1.4-1.4L13.2 12z"/></svg>
+                </button>
+                <div class="topbar-title">
+                    <span id="activeAgentName">Chat</span>
+                    <span class="chip" id="activeAgentChip">chat</span>
+                </div>
+                <div class="topbar-actions">
+                    <span class="kbd-hint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
+                </div>
+            </header>
+
+            <section class="chat-scroll" id="chat" aria-live="polite">
+                <div class="welcome" id="welcome">
+                    <span class="hero-pill">AWS Bedrock AgentCore</span>
+                    <h1>How can I help today?</h1>
+                    <p class="hero-sub">Pick an agent, then ask about incidents, root causes, or anything else.</p>
+
+                    <div class="agent-grid" id="agentGrid">
+                        <button class="agent-card" data-agent="chat">
+                            <span class="agent-icon chat">C</span>
+                            <strong>Chat</strong>
+                            <span>General assistant for drafting, explanations, and questions that don’t need ticket data.</span>
+                        </button>
+                        <button class="agent-card" data-agent="snow">
+                            <span class="agent-icon snow">S</span>
+                            <strong>SNOW</strong>
+                            <span>Search closed incidents and surface how similar tickets were resolved.</span>
+                        </button>
+                        <button class="agent-card" data-agent="rca">
+                            <span class="agent-icon rca">R</span>
+                            <strong>RCA</strong>
+                            <span>Analyze a new incident against closed history to find the likely root cause.</span>
+                        </button>
+                    </div>
+
+                    <div class="samples" id="samples"></div>
+                </div>
+            </section>
+
+            <footer class="composer">
+                <form id="chatForm" autocomplete="off">
+                    <div class="composer-box">
+                        <textarea id="input" rows="1" placeholder="Ask anything…" aria-label="Message"></textarea>
+                        <button id="sendBtn" type="submit" aria-label="Send message" disabled>
+                            <svg viewBox="0 0 24 24" width="20" height="20"><path fill="currentColor" d="M3.4 20.4 21.9 12 3.4 3.6 3.4 10l12.9 2-12.9 2z"/></svg>
+                        </button>
+                    </div>
+                    <p class="composer-hint">
+                        <span id="composerAgent">Chat</span> agent · answers grounded in closed incident data
+                    </p>
+                </form>
+            </footer>
         </main>
     </div>
+
     <script src="/static/script.js"></script>
 </body>
 </html>
