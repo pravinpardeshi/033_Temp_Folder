@@ -26,15 +26,20 @@ class ChatAgent(BaseAgent):
             region_name=settings.AWS_REGION,
         )
 
-    async def invoke(self, session_id: str, prompt: str) -> str:
+    async def invoke(
+        self,
+        session_id: str,
+        prompt: str,
+        table_name: str | None = None,
+    ) -> str:
         try:
             response = self.client.converse(
                 modelId=settings.LLM_MODEL_ID,
                 system=[{"text": CHAT_SYSTEM_PROMPT}],
                 messages=[{"role": "user", "content": [{"text": prompt}]}],
                 inferenceConfig={
-                    "maxTokens": settings.LLM_MAX_TOKENS,
-                    "temperature": 0.4,
+                    "maxTokens": settings.CHAT_MAX_TOKENS,
+                    "temperature": settings.CHAT_TEMPERATURE,
                 },
             )
             return response["output"]["message"]["content"][0]["text"]

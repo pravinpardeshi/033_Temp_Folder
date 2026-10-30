@@ -32,7 +32,7 @@ class RCAAgent(RAGAgent):
 
     def __init__(self):
         super().__init__(
-            table_name=settings.RCA_TABLE_NAME or settings.RDS_TABLE_NAME,
+            table_name=settings.rca_table,
             top_k=settings.RCA_TOP_K,
             system_prompt=RCA_SYSTEM_PROMPT,
             max_tokens=settings.RCA_MAX_TOKENS,

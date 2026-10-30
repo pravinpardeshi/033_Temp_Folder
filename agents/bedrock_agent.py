@@ -20,7 +20,12 @@ class BedrockAgent(BaseAgent):
             region_name=settings.AWS_REGION,
         )
 
-    async def invoke(self, session_id: str, prompt: str) -> str:
+    async def invoke(
+        self,
+        session_id: str,
+        prompt: str,
+        table_name: str | None = None,
+    ) -> str:
         try:
             response = self.client.invoke_agent(
                 agentId=self.agent_id,

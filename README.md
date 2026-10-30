@@ -68,8 +68,11 @@ Health check: `curl http://localhost:8080/ping`
 | `AWS_REGION` | Region for Bedrock, RDS. |
 | `LLM_MODEL_ID` | Bedrock model used for answers (e.g. Claude). |
 | `LLM_MAX_TOKENS` | Max output tokens for the QA agent. |
+| `LLM_TEMPERATURE` | Sampling temperature for RAG answers (default 0.2). |
+| `CHAT_MAX_TOKENS`, `CHAT_TEMPERATURE` | Output limit and temperature for the chat agent. |
 | `EMBEDDING_MODEL_ID` | Bedrock embedding model (Titan). |
-| `RDS_TABLE_NAME` | pgvector table for the QA agent. |
+| `RDS_TABLE_NAME` | Default pgvector table for the QA agent. |
+| `SNOW_TABLE_OPTIONS` | Comma-separated tables selectable in the UI for the SNOW agent (default `snow_embeddings_table,XYZ123`). |
 | `RAG_TOP_K` | Number of incidents retrieved by the QA agent. |
 | `HYBRID_SEARCH_ENABLED` | Combine vector search with PostgreSQL full-text search (default true). |
 | `HYBRID_CANDIDATE_K` | Candidates fetched from each retriever before fusion (default 20). |
@@ -80,10 +83,82 @@ Health check: `curl http://localhost:8080/ping`
 | `RCA_TOP_K` | Incidents retrieved for RCA (default 8). |
 | `RCA_MAX_TOKENS` | Max output tokens for RCA. |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_SSLMODE` | RDS connection (IAM auth, no password). |
+| `DB_CONNECT_TIMEOUT` | Seconds to wait when opening the RDS connection (default 10). |
 | `RDS_INSTANCE_ARN` | RDS ARN used in IAM policy scoping. |
 | `AGENT_ROUTER_MODEL_ID` | Model for intent classification (blank = `LLM_MODEL_ID`). |
+| `ROUTER_MAX_TOKENS`, `ROUTER_TEMPERATURE` | Output limit and temperature for the intent classifier. |
 | `SOLUTION_AGENT_ID`, `SOLUTION_AGENT_ALIAS_ID` | Optional Bedrock Agent for solution recommendations. |
 | `APP_PORT`, `APP_HOST` | Local server binding (default 8080 / 0.0.0.0). |
+
+### Obtaining the Solution Recommender agent IDs
+
+The optional `solution` agent delegates to a **Bedrock Agent** that you create
+separately in AWS. It is disabled unless **both** `SOLUTION_AGENT_ID` and
+`SOLUTION_AGENT_ALIAS_ID` are set; otherwise it is skipped at registration.
+
+A Bedrock Agent's **name is only a human label** — the invoke API needs the
+unique resource identifiers:
+
+- `SOLUTION_AGENT_ID` — the unique ID of the agent (e.g. `ABCDE12345`).
+- `SOLUTION_AGENT_ALIAS_ID` — the ID of an alias (e.g. `TSTALIASID` or a
+  `prod` alias) that selects which prepared version runs.
+
+They are passed to `bedrock-agent-runtime` as `agentId` / `agentAliasId`
+(see `agents/bedrock_agent.py`).
+
+**AWS Console**
+
+1. Open **Amazon Bedrock** → **Agents**.
+2. Click the agent. The **Agent ID** appears on the overview and in the ARN.
+3. Open the **Aliases** tab (create one if none exists) and copy the
+   **Alias ID**. `TSTALIASID` is the built-in test alias.
+
+**AWS CLI**
+
+```bash
+# List agents -> agentId and agentName
+aws bedrock-agent list-agents --region us-east-1 \
+  --query "agentSummaries[].[agentId,agentName,agentStatus]" --output table
+
+# Find an agent ID by name
+aws bedrock-agent list-agents --region us-east-1 \
+  --query "agentSummaries[?agentName=='my-solution-agent'].agentId" --output text
+
+# List aliases for that agent -> agentAliasId
+aws bedrock-agent list-agent-aliases \
+  --agent-id <AGENT_ID> --region us-east-1 \
+  --query "agentAliasSummaries[].[agentAliasId,agentAliasName]" --output table
+
+# Create an alias if the agent has none (after preparing the agent)
+aws bedrock-agent create-agent-alias \
+  --agent-id <AGENT_ID> --agent-alias-name prod --region us-east-1
+```
+
+**boto3**
+
+```python
+import boto3
+
+client = boto3.client("bedrock-agent", region_name="us-east-1")
+for agent in client.list_agents()["agentSummaries"]:
+    print(agent["agentName"], agent["agentId"])
+    aliases = client.list_agent_aliases(agentId=agent["agentId"])
+    for alias in aliases["agentAliasSummaries"]:
+        print("   alias:", alias["agentAliasName"], alias["agentAliasId"])
+```
+
+Then set them in `.env` (or the Runtime environment):
+
+```bash
+SOLUTION_AGENT_ID=ABCDE12345
+SOLUTION_AGENT_ALIAS_ID=TSTALIASID   # or your prod alias ID
+```
+
+Notes:
+
+- The region must match `AWS_REGION`; Bedrock Agents are regional.
+- The agent must be **PREPARED** and have an alias before it can be invoked.
+- The Runtime execution role needs `bedrock:InvokeAgent` on the agent's ARN.
 
 ---
 
@@ -129,6 +204,11 @@ The UI in `static/` is a single-page app served by the runtime:
 
 - **Agent switcher** — Chat, SNOW, and RCA, with per-agent suggestions.
   Every request sends the selected agent key explicitly.
+- **Data source dropdown** — when the SNOW agent is active, a table selector
+  lists the pgvector tables from `SNOW_TABLE_OPTIONS` (default
+  `snow_embeddings_table`, plus `XYZ123`). The choice is persisted per
+  conversation and sent as `table_name`; the backend validates it against the
+  allow-list before querying.
 - **Light / dark theme** toggle in the sidebar. The choice is persisted in
   `localStorage` and defaults to the OS preference.
 - **Conversation history** stored in `localStorage` with per-conversation
@@ -460,6 +540,7 @@ description, then confirm the response and the invocation log show the new key.
 | `GET /health` | Dashboard health probe. |
 | `GET /api/monitor/metrics` | Requests, tokens, latency, error rate, uptime. |
 | `GET /api/monitor/invocations?limit=50` | Recent invocation log. |
+| `GET /api/tables` | Tables available to the SNOW agent and the default table. |
 
 ---
 

@@ -32,11 +32,18 @@ STATIC_DIR = BASE_DIR / "static"
 app = BedrockAgentCoreApp()
 
 
-async def _run_agent(prompt: str, session_id: str, agent_key: str | None = None) -> str:
+async def _run_agent(
+    prompt: str,
+    session_id: str,
+    agent_key: str | None = None,
+    table_name: str | None = None,
+) -> str:
     """Execute the orchestrator and record monitoring metrics."""
     start = time.time()
     try:
-        answer = await orchestrator.route_query(session_id, prompt, agent_key=agent_key)
+        answer = await orchestrator.route_query(
+            session_id, prompt, agent_key=agent_key, table_name=table_name
+        )
         monitoring.record_invocation(
             status="success",
             query=prompt,
@@ -68,12 +75,15 @@ async def invoke(payload, context):
     prompt = payload.get("prompt") or payload.get("message") or ""
     session_id = payload.get("session_id") or str(uuid.uuid4())
     agent_key = payload.get("agent")
+    table_name = payload.get("table_name") or payload.get("table")
 
     if not str(prompt).strip():
         return {"error": "Missing 'prompt' in payload."}
 
     try:
-        answer = await _run_agent(str(prompt), session_id, agent_key=agent_key)
+        answer = await _run_agent(
+            str(prompt), session_id, agent_key=agent_key, table_name=table_name
+        )
     except Exception as e:
         return JSONResponse({"error": str(e)}, status_code=500)
 
@@ -83,6 +93,14 @@ async def invoke(payload, context):
 async def index(request: Request) -> FileResponse:
     """Serve the chatbot UI."""
     return FileResponse(STATIC_DIR / "index.html")
+
+
+async def tables(request: Request) -> JSONResponse:
+    """Incident tables the SNOW agent can query (used by the UI dropdown)."""
+    return JSONResponse({
+        "tables": settings.snow_tables,
+        "default": settings.RDS_TABLE_NAME,
+    })
 
 
 async def chat(request: Request) -> JSONResponse:
@@ -95,12 +113,15 @@ async def chat(request: Request) -> JSONResponse:
     message = payload.get("message") or payload.get("prompt") or ""
     session_id = payload.get("session_id") or str(uuid.uuid4())
     agent_key = payload.get("agent")
+    table_name = payload.get("table_name") or payload.get("table")
 
     if not str(message).strip():
         return JSONResponse({"detail": "Missing 'message'."}, status_code=400)
 
     try:
-        response_text = await _run_agent(str(message), session_id, agent_key=agent_key)
+        response_text = await _run_agent(
+            str(message), session_id, agent_key=agent_key, table_name=table_name
+        )
     except Exception as e:
         return JSONResponse({"detail": str(e)}, status_code=500)
 
@@ -112,6 +133,7 @@ async def chat(request: Request) -> JSONResponse:
 app.router.routes.extend([
     Route("/", index, methods=["GET"]),
     Route("/chat", chat, methods=["POST"]),
+    Route("/api/tables", tables, methods=["GET"]),
     Route("/health", monitoring.health, methods=["GET"]),
     Route("/api/monitor/metrics", monitoring.get_metrics, methods=["GET"]),
     Route("/api/monitor/invocations", monitoring.get_invocations, methods=["GET"]),

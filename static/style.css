@@ -977,6 +977,39 @@ kbd {
     box-shadow: 0 0 0 4px var(--accent-soft), var(--shadow);
 }
 
+.table-select {
+    flex: 0 0 auto;
+    align-self: center;
+    max-width: 220px;
+    padding: 7px 9px;
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    background: var(--surface-2);
+    color: var(--text);
+    font-family: inherit;
+    font-size: 14px;
+    cursor: pointer;
+}
+
+.table-select:hover {
+    border-color: var(--border-strong);
+}
+
+.table-select:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px var(--accent-soft);
+}
+
+.table-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
+
+.table-select[hidden] {
+    display: none;
+}
+
 #input {
     flex: 1;
     min-height: 24px;
@@ -1110,6 +1143,11 @@ kbd {
 
     .composer {
         padding: 8px 14px 14px;
+    }
+
+    .table-select {
+        max-width: 150px;
+        font-size: 13px;
     }
 
     .agent-grid {

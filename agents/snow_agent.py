@@ -11,6 +11,21 @@ QA_SYSTEM_PROMPT = (
 class SnowAgent(RAGAgent):
     """Question/answer agent over closed ServiceNOW incidents."""
 
+    allows_table_override = True
+
+    async def invoke(
+        self,
+        session_id: str,
+        prompt: str,
+        table_name: str | None = None,
+    ) -> str:
+        if table_name and table_name not in settings.snow_tables:
+            return (
+                f"Unknown incident table '{table_name}'. "
+                f"Choose one of: {', '.join(settings.snow_tables)}."
+            )
+        return await super().invoke(session_id, prompt, table_name=table_name)
+
     def __init__(self):
         super().__init__(
             table_name=settings.RDS_TABLE_NAME,

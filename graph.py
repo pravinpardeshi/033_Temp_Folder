@@ -25,6 +25,7 @@ class AgentState(TypedDict, total=False):
     prompt: str
     requested_agent: Optional[str]
     selected_agent: str
+    table_name: Optional[str]
     answer: str
     error: str
 
@@ -35,7 +36,11 @@ AgentRegistry = Dict[str, Tuple[BaseAgent, str]]
 def _make_agent_node(key: str, agent: BaseAgent) -> Callable[[AgentState], Any]:
     async def node(state: AgentState) -> AgentState:
         try:
-            answer = await agent.invoke(state["session_id"], state["prompt"])
+            answer = await agent.invoke(
+                state["session_id"],
+                state["prompt"],
+                table_name=state.get("table_name"),
+            )
             return {"answer": answer}
         except Exception as e:  # noqa: BLE001 - surfaced to the caller
             return {"answer": f"Error invoking {key} agent: {e}", "error": str(e)}
@@ -77,10 +82,17 @@ def build_graph(
     return graph.compile()
 
 
-async def run_graph(graph: Any, session_id: str, prompt: str, agent_key: Optional[str] = None) -> str:
+async def run_graph(
+    graph: Any,
+    session_id: str,
+    prompt: str,
+    agent_key: Optional[str] = None,
+    table_name: Optional[str] = None,
+) -> str:
     result = await graph.ainvoke({
         "session_id": session_id,
         "prompt": prompt,
         "requested_agent": agent_key,
+        "table_name": table_name,
     })
     return result.get("answer", "No response received from the agent.")

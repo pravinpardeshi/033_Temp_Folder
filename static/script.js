@@ -4,7 +4,14 @@
     const AGENT_KEY = "agentcore.agent";
     const CONVOS_KEY = "agentcore.conversations.v1";
     const ACTIVE_KEY = "agentcore.activeConversation";
+    const TABLE_KEY = "agentcore.table";
     const MAX_CONVERSATIONS = 30;
+
+    const FALLBACK_TABLES = ["snow_embeddings_table", "XYZ123"];
+    const TABLE_LABELS = {
+        snow_embeddings_table: "SNOW incidents",
+        XYZ123: "JIRA incidents",
+    };
 
     const AGENTS = {
         chat: {
@@ -70,6 +77,7 @@
         form: $("#chatForm"),
         input: $("#input"),
         sendBtn: $("#sendBtn"),
+        tableSelect: $("#tableSelect"),
         composerAgent: $("#composerAgent"),
     };
 
@@ -83,6 +91,9 @@
         conversations: loadConversations(),
         activeId: safeGet(ACTIVE_KEY) || null,
         sending: false,
+        tables: FALLBACK_TABLES.slice(),
+        defaultTable: FALLBACK_TABLES[0],
+        table: safeGet(TABLE_KEY) || FALLBACK_TABLES[0],
     };
 
     if (!AGENTS[state.agent]) state.agent = "chat";
@@ -159,6 +170,55 @@
         applyTheme(next);
     });
 
+    /* ---------------- data source tables ---------------- */
+
+    function tableLabel(name) {
+        const label = TABLE_LABELS[name];
+        return label ? label + " (" + name + ")" : name;
+    }
+
+    function renderTableOptions(tables, defaultTable) {
+        const list = Array.isArray(tables) && tables.length ? tables : FALLBACK_TABLES.slice();
+        state.tables = list;
+        state.defaultTable = defaultTable || list[0];
+        if (!state.table || !list.includes(state.table)) state.table = state.defaultTable;
+
+        el.tableSelect.innerHTML = "";
+        list.forEach((name) => {
+            const option = document.createElement("option");
+            option.value = name;
+            option.textContent = tableLabel(name);
+            el.tableSelect.appendChild(option);
+        });
+        el.tableSelect.value = state.table;
+        safeSet(TABLE_KEY, state.table);
+    }
+
+    function syncTableVisibility() {
+        el.tableSelect.hidden = false;
+        el.tableSelect.disabled = state.sending;
+        el.tableSelect.title = state.agent === "snow"
+            ? "Incident data source table"
+            : "Incident data source table (used by the SNOW agent)";
+    }
+
+    function loadTables() {
+        fetch("/api/tables", { cache: "no-store" })
+            .then((res) => (res.ok ? res.json() : Promise.reject(new Error("tables"))))
+            .then((data) => renderTableOptions(data.tables, data.default))
+            .catch(() => renderTableOptions(FALLBACK_TABLES, FALLBACK_TABLES[0]));
+    }
+
+    el.tableSelect.addEventListener("change", () => {
+        state.table = el.tableSelect.value;
+        safeSet(TABLE_KEY, state.table);
+        const convo = activeConversation();
+        if (convo && convo.messages.length) {
+            convo.table = state.table;
+            saveConversations();
+        }
+    });
+
     /* ---------------- agents ---------------- */
 
     function setAgent(key, persist) {
@@ -179,6 +239,7 @@
         el.activeAgentChip.textContent = meta.label.toLowerCase();
         el.composerAgent.textContent = meta.label;
         el.input.placeholder = meta.placeholder;
+        syncTableVisibility();
         renderSamples();
 
         if (persist !== false) safeSet(AGENT_KEY, key);
@@ -264,6 +325,10 @@
         const convo = activeConversation();
         if (convo) {
             setAgent(convo.agent || state.agent);
+            if (convo.table && state.tables.includes(convo.table)) {
+                state.table = convo.table;
+                el.tableSelect.value = convo.table;
+            }
             renderConversation();
         }
         renderHistory();
@@ -538,6 +603,7 @@
             id: uid(),
             title: text.slice(0, 60),
             agent: state.agent,
+            table: state.table,
             sessionId: null,
             messages: [],
             updatedAt: Date.now(),
@@ -553,6 +619,7 @@
 
         const convo = ensureConversation(message);
         convo.agent = state.agent;
+        convo.table = state.table;
         convo.messages.push({
             role: "user",
             content: message,
@@ -580,6 +647,7 @@
                     message: message,
                     session_id: convo.sessionId || null,
                     agent: state.agent,
+                    table_name: state.table,
                 }),
             });
 
@@ -644,6 +712,7 @@
     function setComposerBusy(busy) {
         el.input.disabled = busy;
         el.sendBtn.disabled = busy || !el.input.value.trim();
+        el.tableSelect.disabled = busy;
         if (!busy) el.input.focus();
     }
 
@@ -756,6 +825,8 @@
     /* ---------------- init ---------------- */
 
     applyTheme(document.documentElement.getAttribute("data-theme") || "dark");
+    renderTableOptions(state.tables, state.defaultTable);
+    loadTables();
     setAgent(state.agent, false);
     renderHistory();
 

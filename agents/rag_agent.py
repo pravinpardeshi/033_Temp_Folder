@@ -14,6 +14,9 @@ from config import settings
 class RAGAgent(BaseAgent):
     """Embedding -> hybrid retrieval -> optional rerank -> Bedrock LLM answer."""
 
+    # Subclasses that may switch tables per request set this to True.
+    allows_table_override = False
+
     def __init__(
         self,
         table_name: str,
@@ -57,17 +60,21 @@ class RAGAgent(BaseAgent):
         response_body = json.loads(response.get("body").read())
         return response_body.get("embedding")
 
-    def _vector_candidates(self, conn, query_vector: list, limit: int) -> list:
+    def _vector_candidates(
+        self, conn, query_vector: list, limit: int, table_name: str | None = None
+    ) -> list:
         """Nearest neighbours by cosine distance (pgvector)."""
         vector_literal = "[" + ",".join(str(v) for v in query_vector) + "]"
         query = sql.SQL(
             "SELECT content FROM {table} ORDER BY embedding <=> %s::vector LIMIT %s"
-        ).format(table=sql.Identifier(self.table_name))
+        ).format(table=sql.Identifier(table_name or self.table_name))
         with conn.cursor() as cur:
             cur.execute(query, (vector_literal, limit))
             return [str(row[0]) for row in cur.fetchall()]
 
-    def _keyword_candidates(self, conn, query_text: str, limit: int) -> list:
+    def _keyword_candidates(
+        self, conn, query_text: str, limit: int, table_name: str | None = None
+    ) -> list:
         """Lexical matches using PostgreSQL full-text search."""
         query = sql.SQL(
             "SELECT content FROM {table} "
@@ -75,12 +82,14 @@ class RAGAgent(BaseAgent):
             "ORDER BY ts_rank_cd(to_tsvector('english', content), "
             "plainto_tsquery('english', %s)) DESC "
             "LIMIT %s"
-        ).format(table=sql.Identifier(self.table_name))
+        ).format(table=sql.Identifier(table_name or self.table_name))
         with conn.cursor() as cur:
             cur.execute(query, (query_text, query_text, limit))
             return [str(row[0]) for row in cur.fetchall()]
 
-    def _retrieve(self, prompt: str, query_vector: list) -> list:
+    def _retrieve(
+        self, prompt: str, query_vector: list, table_name: str | None = None
+    ) -> list:
         """Hybrid retrieval: vector + keyword, fused, then reranked."""
         candidate_k = settings.HYBRID_CANDIDATE_K
         vector_docs = []
@@ -94,12 +103,17 @@ class RAGAgent(BaseAgent):
             password=token,
             dbname=settings.DB_NAME,
             sslmode=settings.DB_SSLMODE,
+            connect_timeout=settings.DB_CONNECT_TIMEOUT,
         )
         try:
-            vector_docs = self._vector_candidates(conn, query_vector, candidate_k)
+            vector_docs = self._vector_candidates(
+                conn, query_vector, candidate_k, table_name
+            )
             if settings.HYBRID_SEARCH_ENABLED:
                 try:
-                    keyword_docs = self._keyword_candidates(conn, prompt, candidate_k)
+                    keyword_docs = self._keyword_candidates(
+                        conn, prompt, candidate_k, table_name
+                    )
                 except Exception:
                     keyword_docs = []
         finally:
@@ -128,6 +142,7 @@ class RAGAgent(BaseAgent):
         body = json.dumps({
             "anthropic_version": "bedrock-2023-05-31",
             "max_tokens": self.max_tokens,
+            "temperature": settings.LLM_TEMPERATURE,
             "messages": [{"role": "user", "content": self._build_prompt(prompt, context)}],
         })
         response = self.bedrock_runtime.invoke_model(
@@ -137,10 +152,20 @@ class RAGAgent(BaseAgent):
         response_body = json.loads(response.get("body").read())
         return response_body["content"][0]["text"]
 
-    async def invoke(self, session_id: str, prompt: str) -> str:
+    async def invoke(
+        self,
+        session_id: str,
+        prompt: str,
+        table_name: str | None = None,
+    ) -> str:
         try:
+            selected_table = (
+                table_name
+                if self.allows_table_override and table_name
+                else self.table_name
+            )
             query_vector = self._get_embedding(prompt)
-            documents = self._retrieve(prompt, query_vector)
+            documents = self._retrieve(prompt, query_vector, selected_table)
             context = "\n\n---\n\n".join(documents)
             return self._generate_answer(prompt, context)
         except Exception as e:

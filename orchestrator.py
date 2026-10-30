@@ -104,7 +104,10 @@ class AgentOrchestrator:
             response = self._get_router_client().converse(
                 modelId=settings.AGENT_ROUTER_MODEL_ID or settings.LLM_MODEL_ID,
                 messages=[{"role": "user", "content": [{"text": classification_prompt}]}],
-                inferenceConfig={"maxTokens": 10, "temperature": 0},
+                inferenceConfig={
+                    "maxTokens": settings.ROUTER_MAX_TOKENS,
+                    "temperature": settings.ROUTER_TEMPERATURE,
+                },
             )
             answer = response["output"]["message"]["content"][0]["text"].strip().lower()
             for key in self._agents:
@@ -119,10 +122,13 @@ class AgentOrchestrator:
         session_id: str,
         prompt: str,
         agent_key: Optional[str] = None,
+        table_name: Optional[str] = None,
     ) -> str:
         if not self._agents:
             return "No active agents available."
-        return await run_graph(self._graph, session_id, prompt, agent_key)
+        return await run_graph(
+            self._graph, session_id, prompt, agent_key, table_name=table_name
+        )
 
 
 orchestrator = AgentOrchestrator()
