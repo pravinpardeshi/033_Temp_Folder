@@ -275,7 +275,7 @@ def format_history(turns, max_chars=4000):
     return text[-max_chars:]
 ```
 
-Pass this as prior context to `RAGAgent`/`ChatAgent`. Keep it bounded — full
+Pass this as prior context to the `snow`/`rca`/`chat` agents. Keep it bounded — full
 transcripts will blow up input tokens and latency.
 
 ---

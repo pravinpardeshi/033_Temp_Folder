@@ -1,0 +1,7 @@
+langgraph
+boto3
+botocore
+psycopg[binary]
+pgvector
+sqlglot
+bedrock-agentcore

@@ -6,6 +6,12 @@
     const ACTIVE_KEY = "agentcore.activeConversation";
     const TABLE_KEY = "agentcore.table";
     const MAX_CONVERSATIONS = 30;
+    const API_BASE = (window.AGENTCORE_API_BASE || "").replace(/\/+$/, "");
+    const CHAT_PATH = "/chat";
+
+    function apiUrl(path) {
+        return API_BASE + path;
+    }
 
     const FALLBACK_TABLES = ["snow_embeddings_table", "XYZ123"];
     const TABLE_LABELS = {
@@ -71,14 +77,22 @@
         statusText: $("#statusText"),
         activeAgentName: $("#activeAgentName"),
         activeAgentChip: $("#activeAgentChip"),
+        topbarHint: $("#topbarHint"),
         chat: $("#chat"),
         welcome: $("#welcome"),
         samples: $("#samples"),
+        composer: $("#composer"),
         form: $("#chatForm"),
         input: $("#input"),
         sendBtn: $("#sendBtn"),
         tableSelect: $("#tableSelect"),
         composerAgent: $("#composerAgent"),
+        changeView: $("#changeView"),
+        changeForm: $("#changeForm"),
+        changeNumber: $("#changeNumber"),
+        changeSubmit: $("#changeSubmit"),
+        changeStatus: $("#changeStatus"),
+        changeResult: $("#changeResult"),
     };
 
     const messagesEl = document.createElement("div");
@@ -91,6 +105,8 @@
         conversations: loadConversations(),
         activeId: safeGet(ACTIVE_KEY) || null,
         sending: false,
+        changeSending: false,
+        view: "chat",
         tables: FALLBACK_TABLES.slice(),
         defaultTable: FALLBACK_TABLES[0],
         table: safeGet(TABLE_KEY) || FALLBACK_TABLES[0],
@@ -219,6 +235,33 @@
         }
     });
 
+    /* ---------------- views ---------------- */
+
+    function setView(view) {
+        state.view = view === "change" ? "change" : "chat";
+        const isChange = state.view === "change";
+
+        el.chat.hidden = isChange;
+        el.composer.hidden = isChange;
+        el.changeView.hidden = !isChange;
+        el.topbarHint.hidden = isChange;
+
+        $$("[data-tool]").forEach((btn) => {
+            btn.classList.toggle("active", isChange && btn.dataset.tool === "change");
+        });
+
+        if (isChange) {
+            el.activeAgentName.textContent = "Change QA";
+            el.activeAgentChip.textContent = "change";
+            el.changeNumber.focus();
+        } else {
+            const meta = AGENTS[state.agent];
+            el.activeAgentName.textContent = meta.label;
+            el.activeAgentChip.textContent = meta.label.toLowerCase();
+            syncTableVisibility();
+        }
+    }
+
     /* ---------------- agents ---------------- */
 
     function setAgent(key, persist) {
@@ -226,7 +269,7 @@
         state.agent = key;
         const meta = AGENTS[key];
 
-        $$(".agent-item").forEach((btn) => {
+        $$(".agent-item[data-agent]").forEach((btn) => {
             const active = btn.dataset.agent === key;
             btn.classList.toggle("active", active);
             btn.setAttribute("aria-checked", active ? "true" : "false");
@@ -235,12 +278,10 @@
             card.classList.toggle("active", card.dataset.agent === key);
         });
 
-        el.activeAgentName.textContent = meta.label;
-        el.activeAgentChip.textContent = meta.label.toLowerCase();
         el.composerAgent.textContent = meta.label;
         el.input.placeholder = meta.placeholder;
-        syncTableVisibility();
         renderSamples();
+        setView("chat");
 
         if (persist !== false) safeSet(AGENT_KEY, key);
     }
@@ -268,6 +309,14 @@
             setAgent(card.dataset.agent);
             el.input.focus();
         }
+    });
+
+    $$("[data-tool]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+            if (state.sending) return;
+            setView(btn.dataset.tool);
+            closeSidebar();
+        });
     });
 
     /* ---------------- history ---------------- */
@@ -640,7 +689,7 @@
 
         let assistantMessage;
         try {
-            const response = await fetchJSON("/chat", {
+            const response = await fetchJSON(apiUrl(CHAT_PATH), {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
@@ -744,8 +793,62 @@
         sendMessage(el.input.value);
     });
 
+    /* ---------------- change quality assessment ---------------- */
+
+    function setChangeBusy(busy) {
+        state.changeSending = busy;
+        el.changeNumber.disabled = busy;
+        el.changeSubmit.disabled = busy;
+    }
+
+    el.changeForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (state.changeSending) return;
+
+        const changeNumber = el.changeNumber.value.trim();
+        if (!changeNumber) return;
+
+        setChangeBusy(true);
+        el.changeResult.hidden = true;
+        el.changeResult.innerHTML = "";
+        el.changeStatus.hidden = false;
+        el.changeStatus.className = "change-status loading";
+        el.changeStatus.textContent = "Assessing " + changeNumber + "…";
+
+        try {
+            const data = await fetchJSON(apiUrl(CHAT_PATH), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    message: changeNumber,
+                    agent: "change_qa_agent",
+                }),
+            });
+
+            el.changeStatus.hidden = true;
+            el.changeResult.hidden = false;
+            el.changeResult.innerHTML =
+                '<div class="change-result-head">' +
+                "<strong>" + escapeHtml(changeNumber) + "</strong>" +
+                "<span>Quality assessment</span>" +
+                "</div>" +
+                '<div class="change-result-body">' +
+                renderMarkdown(data.response || "(empty response)") +
+                "</div>";
+            updateRuntimeStatus("online");
+        } catch (error) {
+            el.changeStatus.hidden = false;
+            el.changeStatus.className = "change-status error";
+            el.changeStatus.textContent = error.message || "Request failed.";
+            updateRuntimeStatus("error");
+        } finally {
+            setChangeBusy(false);
+        }
+    });
+
     el.newChatBtn.addEventListener("click", () => {
         if (state.sending) return;
+        setView("chat");
         state.activeId = null;
         safeRemove(ACTIVE_KEY);
         renderWelcome();

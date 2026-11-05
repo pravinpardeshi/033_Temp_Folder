@@ -20,18 +20,12 @@ CHAT_SYSTEM_PROMPT = (
 
 class ChatAgent(BaseAgent):
     def __init__(self):
-        super().__init__("", "")
         self.client = boto3.client(
             "bedrock-runtime",
             region_name=settings.AWS_REGION,
         )
 
-    async def invoke(
-        self,
-        session_id: str,
-        prompt: str,
-        table_name: str | None = None,
-    ) -> str:
+    async def invoke(self, session_id: str, prompt: str, table_name: str | None = None,) -> str:
         try:
             response = self.client.converse(
                 modelId=settings.LLM_MODEL_ID,

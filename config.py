@@ -24,8 +24,6 @@ class Settings(BaseSettings):
     CHAT_TEMPERATURE: float = 0.4
 
     # ServiceNOW Agent (v1)
-    SNOW_AGENT_ID: str = ""
-    SNOW_AGENT_ALIAS_ID: str = ""
     RDS_INSTANCE_ARN: str = ""
     RDS_TABLE_NAME: str = "snow_embeddings_table"
     # Tables the UI may select for the SNOW agent (comma-separated).
@@ -36,9 +34,10 @@ class Settings(BaseSettings):
     RCA_TOP_K: int = 8
     RCA_MAX_TOKENS: int = 1500
 
-    # Solution Recommender Agent (v2)
-    SOLUTION_AGENT_ID: str = ""
-    SOLUTION_AGENT_ALIAS_ID: str = ""
+    # Change quality assessment agent
+    CHANGE_TABLE_NAME: str = ""
+    CHANGE_QUALITY_MAX_TOKENS: int = 1200
+    CHANGE_QUALITY_TEMPERATURE: float = 0.2
 
     # Intent router (only used when more than one agent is configured)
     AGENT_ROUTER_MODEL_ID: str = ""

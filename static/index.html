@@ -71,6 +71,17 @@
                 </button>
             </div>
 
+            <div class="section-label">Tools</div>
+            <div class="agent-list" aria-label="Tools">
+                <button class="agent-item" data-tool="change" type="button" title="Change QA — Change item quality assessment">
+                    <span class="agent-icon change">Q</span>
+                    <span class="agent-copy">
+                        <strong>Change QA</strong>
+                        <small>Change quality assessment</small>
+                    </span>
+                </button>
+            </div>
+
             <div class="section-label history-label">
                 <span>History</span>
                 <button class="link-btn" id="clearHistoryBtn" title="Delete all conversations">Clear</button>
@@ -105,7 +116,7 @@
                     <span class="chip" id="activeAgentChip">chat</span>
                 </div>
                 <div class="topbar-actions">
-                    <span class="kbd-hint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
+                    <span class="kbd-hint" id="topbarHint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
                 </div>
             </header>
 
@@ -137,7 +148,27 @@
                 </div>
             </section>
 
-            <footer class="composer">
+            <section class="change-view" id="changeView" hidden aria-live="polite">
+                <div class="change-card">
+                    <span class="hero-pill">Change quality</span>
+                    <h1>Change item quality assessment</h1>
+                    <p class="change-sub">Enter a Change Request Number to review its completeness, risk readiness, and implementation quality.</p>
+
+                    <form class="change-form" id="changeForm" autocomplete="off">
+                        <label for="changeNumber">Change Request Number</label>
+                        <div class="change-row">
+                            <input id="changeNumber" name="change_number" type="text" placeholder="CHG0030001" maxlength="64" autocomplete="off" spellcheck="false" required>
+                            <button id="changeSubmit" type="submit">Assess change</button>
+                        </div>
+                        <p class="change-hint">Example: CHG0030001</p>
+                    </form>
+
+                    <p class="change-status" id="changeStatus" hidden></p>
+                    <div class="change-result" id="changeResult" hidden></div>
+                </div>
+            </section>
+
+            <footer class="composer" id="composer">
                 <form id="chatForm" autocomplete="off">
                     <div class="composer-box">
                         <select id="tableSelect" class="table-select" aria-label="Incident data source table" title="Incident data source table (SNOW agent)"></select>
@@ -154,6 +185,11 @@
         </main>
     </div>
 
+    <script>
+        // Set this to the API Gateway URL when the UI is hosted separately.
+        // Leave blank when the UI is served by the same runtime.
+        window.AGENTCORE_API_BASE = "";
+    </script>
     <script src="/static/script.js"></script>
 </body>
 </html>

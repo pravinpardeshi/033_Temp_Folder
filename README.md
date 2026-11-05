@@ -5,18 +5,22 @@ A ChatGPT-style chatbot for closed ServiceNOW incidents. The backend runs on
 retrieves context from a **PostgreSQL + pgvector** incident store on **Amazon
 RDS** (IAM database authentication, no passwords).
 
-Three agents ship in v1:
+Three agents are registered in the orchestrator:
 
 | Agent | Key | What it does |
 | --- | --- | --- |
-| Chat agent | `chat` | General assistant (drafting, explanations) without incident retrieval. |
-| QA agent | `snow` | Answers questions over closed ServiceNOW incidents. |
-| RCA agent | `rca` | Analyzes the root cause of a **new** incident using similar closed incidents. |
+| SNOW agent | `snow_agent` | Answers questions over closed ServiceNOW incidents. |
+| RCA agent | `rca_agent` | Analyzes the root cause of a **new** incident using similar closed incidents. |
+| Change QA agent | `change_qa_agent` | Assesses a change request by number (UI form, not chat). |
+
+Legacy keys are accepted as aliases: `chat` → `snow_agent`, `snow` →
+`snow_agent`, `rca` → `rca_agent`, `change` / `change_qa` →
+`change_qa_agent`.
 
 Routing is implemented with **LangGraph**:
 
 ```
-START -> router -> (snow | chat | rca | solution) -> END
+START -> router -> (snow_agent | rca_agent | change_qa_agent) -> END
 ```
 
 `router` respects an explicit `agent` in the request; otherwise it uses cheap
@@ -36,12 +40,11 @@ keyword hints and, if needed, a small Bedrock LLM classifier.
 ├── monitoring.py             # /health and /api/monitor/* endpoints
 ├── agents/
 │   ├── base.py               # BaseAgent interface
-│   ├── rag_agent.py          # Embedding -> hybrid retrieval -> rerank -> LLM
-│   ├── reranker.py           # RRF fusion + Bedrock Rerank (not an agent)
-│   ├── chat_agent.py         # General chat agent
-│   ├── snow_agent.py         # QA agent
-│   ├── rca_agent.py          # Root cause analysis agent
-│   └── bedrock_agent.py      # Wrapper for Agents for Amazon Bedrock
+│   ├── reranker.py           # RRF fusion + Bedrock Rerank (shared utility)
+│   ├── chat_agent.py         # Legacy general chat agent (not registered)
+│   ├── snow_agent.py         # QA agent (self-contained RAG implementation)
+│   ├── rca_agent.py          # Root cause analysis (self-contained RAG implementation)
+│   └── change_qa_agent.py    # Change item quality assessment (form-driven)
 ├── static/                   # Chat UI (HTML/CSS/JS)
 ├── build_deploy_package.bat  # Builds dist\agentcore_deployment.zip
 ├── agentcore.json            # Runtime metadata
@@ -87,97 +90,26 @@ Health check: `curl http://localhost:8080/ping`
 | `RDS_INSTANCE_ARN` | RDS ARN used in IAM policy scoping. |
 | `AGENT_ROUTER_MODEL_ID` | Model for intent classification (blank = `LLM_MODEL_ID`). |
 | `ROUTER_MAX_TOKENS`, `ROUTER_TEMPERATURE` | Output limit and temperature for the intent classifier. |
-| `SOLUTION_AGENT_ID`, `SOLUTION_AGENT_ALIAS_ID` | Optional Bedrock Agent for solution recommendations. |
+| `CHANGE_TABLE_NAME` | Optional pgvector table with change records; enables lookup by change number. |
+| `CHANGE_QUALITY_MAX_TOKENS`, `CHANGE_QUALITY_TEMPERATURE` | Output limit and temperature for change assessments. |
 | `APP_PORT`, `APP_HOST` | Local server binding (default 8080 / 0.0.0.0). |
-
-### Obtaining the Solution Recommender agent IDs
-
-The optional `solution` agent delegates to a **Bedrock Agent** that you create
-separately in AWS. It is disabled unless **both** `SOLUTION_AGENT_ID` and
-`SOLUTION_AGENT_ALIAS_ID` are set; otherwise it is skipped at registration.
-
-A Bedrock Agent's **name is only a human label** — the invoke API needs the
-unique resource identifiers:
-
-- `SOLUTION_AGENT_ID` — the unique ID of the agent (e.g. `ABCDE12345`).
-- `SOLUTION_AGENT_ALIAS_ID` — the ID of an alias (e.g. `TSTALIASID` or a
-  `prod` alias) that selects which prepared version runs.
-
-They are passed to `bedrock-agent-runtime` as `agentId` / `agentAliasId`
-(see `agents/bedrock_agent.py`).
-
-**AWS Console**
-
-1. Open **Amazon Bedrock** → **Agents**.
-2. Click the agent. The **Agent ID** appears on the overview and in the ARN.
-3. Open the **Aliases** tab (create one if none exists) and copy the
-   **Alias ID**. `TSTALIASID` is the built-in test alias.
-
-**AWS CLI**
-
-```bash
-# List agents -> agentId and agentName
-aws bedrock-agent list-agents --region us-east-1 \
-  --query "agentSummaries[].[agentId,agentName,agentStatus]" --output table
-
-# Find an agent ID by name
-aws bedrock-agent list-agents --region us-east-1 \
-  --query "agentSummaries[?agentName=='my-solution-agent'].agentId" --output text
-
-# List aliases for that agent -> agentAliasId
-aws bedrock-agent list-agent-aliases \
-  --agent-id <AGENT_ID> --region us-east-1 \
-  --query "agentAliasSummaries[].[agentAliasId,agentAliasName]" --output table
-
-# Create an alias if the agent has none (after preparing the agent)
-aws bedrock-agent create-agent-alias \
-  --agent-id <AGENT_ID> --agent-alias-name prod --region us-east-1
-```
-
-**boto3**
-
-```python
-import boto3
-
-client = boto3.client("bedrock-agent", region_name="us-east-1")
-for agent in client.list_agents()["agentSummaries"]:
-    print(agent["agentName"], agent["agentId"])
-    aliases = client.list_agent_aliases(agentId=agent["agentId"])
-    for alias in aliases["agentAliasSummaries"]:
-        print("   alias:", alias["agentAliasName"], alias["agentAliasId"])
-```
-
-Then set them in `.env` (or the Runtime environment):
-
-```bash
-SOLUTION_AGENT_ID=ABCDE12345
-SOLUTION_AGENT_ALIAS_ID=TSTALIASID   # or your prod alias ID
-```
-
-Notes:
-
-- The region must match `AWS_REGION`; Bedrock Agents are regional.
-- The agent must be **PREPARED** and have an alias before it can be invoked.
-- The Runtime execution role needs `bedrock:InvokeAgent` on the agent's ARN.
-
----
 
 ## Using the agents
 
 Explicit agent selection (recommended for automation):
 
 ```bash
-# General chat
+# SNOW / QA
 curl -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
-  -d '{"message":"Draft a status update for an active P1","agent":"chat"}'
-
-# QA
-curl -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
-  -d '{"message":"How do we fix VPN error 809?","agent":"snow"}'
+  -d '{"message":"How do we fix VPN error 809?","agent":"snow_agent"}'
 
 # RCA
 curl -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
-  -d '{"message":"New P1: payment service returns 502 since 09:00","agent":"rca"}'
+  -d '{"message":"New P1: payment service returns 502 since 09:00","agent":"rca_agent"}'
+
+# Change QA
+curl -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
+  -d '{"message":"CHG0030001","agent":"change_qa_agent"}'
 ```
 
 Auto-routing (omit `agent`):
@@ -191,7 +123,7 @@ AgentCore invocation contract (`POST /invocations`):
 
 ```bash
 curl -X POST http://localhost:8080/invocations -H "Content-Type: application/json" \
-  -d '{"prompt":"Why did the database fail over?","agent":"rca"}'
+  -d '{"prompt":"Why did the database fail over?","agent":"rca_agent"}'
 ```
 
 Reuse a conversation by passing the same `session_id`.
@@ -219,15 +151,54 @@ The UI in `static/` is a single-page app served by the runtime:
 - **Typing indicator**, runtime status (`/ping`), responsive sidebar for
   mobile, `Enter` to send and `Shift+Enter` for a newline.
 
-The browser only calls `POST /chat` (or API Gateway in AWS). No AWS
+The browser only calls the single `POST /chat` route (or its API Gateway
+equivalent). Change QA uses the same route with `agent: "change"`. No AWS
 credentials are exposed to the browser.
+
+---
+
+## Change item quality assessment
+
+The sidebar **Tools → Change QA** page is a standalone form, not a chat. It
+takes a **Change Request Number** and a submit button, calls the backend, and
+renders the returned assessment below the form. The chat composer is hidden
+on this page.
+
+The UI sends the change number through the same route as chat:
+
+```bash
+curl -X POST http://localhost:8080/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message":"CHG0030001","agent":"change"}'
+```
+
+Response:
+
+```json
+{
+  "response": "## Summary\n...",
+  "session_id": "…"
+}
+```
+
+The standalone runtime route `POST /api/change/assess` remains available for
+direct integrations, but the UI does not use it so everything can go through
+one Lambda.
+
+The agent (`agents/change_qa_agent.py`) reviews completeness, risk/impact,
+implementation and backout plans, testing, scheduling, and approvals. If
+`CHANGE_TABLE_NAME` is set, it looks up the change record by number in that
+pgvector table and grounds the assessment in it. When no record is available
+it does **not** invent details; it states what could not be retrieved and
+lists the fields needed for a complete review.
 
 ---
 
 ## Retrieval: hybrid search and reranking
 
-Both `snow` and `rca` use the same retrieval pipeline in
-`agents/rag_agent.py`, implemented as retrieval utilities (not agents):
+Both `snow_agent` and `rca_agent` implement the same retrieval pipeline
+independently in `agents/snow_agent.py` and `agents/rca_agent.py`. The shared pieces are
+utilities, not agents:
 
 1. **Vector search** — pgvector cosine distance (`<=>`) over the incident
    embeddings, top `HYBRID_CANDIDATE_K`.
@@ -273,7 +244,6 @@ USING gin (to_tsvector('english', content));
 6. Ensure the execution role has:
    - `bedrock:InvokeModel` (LLM + embeddings)
    - `bedrock:Rerank` (optional reranking)
-   - `bedrock:InvokeAgent` if using `SOLUTION_AGENT_*`
    - `rds-db:connect` on `arn:aws:rds-db:<region>:<acct>:dbuser:<resource-id>/<db-user>`
    - `s3:GetObject` for the deployment ZIP
 7. Attach the Runtime to the **VPC** with the RDS security group reachable
@@ -301,11 +271,12 @@ Amazon Bedrock AgentCore Runtime  (runtime_entrypoint.py, /invocations)
 Amazon RDS for PostgreSQL + pgvector (snow_embeddings_table)
 ```
 
-All three agents live in **one Runtime**. The Lambda chooses the agent with the
-`agent` field (`"chat"`, `"snow"`, or `"rca"`), or omits it to use auto-routing.
-One Runtime means one deployment package and one set of environment variables;
-the SNOW and RCA agents share the vector store but use different prompts,
-`top_k`, and (max) tokens, while the chat agent uses no retrieval.
+All agents live in **one Runtime**, behind **one Lambda**. The Lambda chooses
+the agent with the `agent` field (`"snow_agent"`, `"rca_agent"`, or
+`"change_qa_agent"`), or omits it to use auto-routing. One Runtime means one deployment package and
+one set of environment variables; the SNOW and RCA agents share the vector
+store but use different prompts, `top_k`, and (max) tokens, while the chat
+agent uses no retrieval.
 
 ### Lambda handler (proxy)
 
@@ -357,15 +328,18 @@ Runtime ARN.
 
 ### Pointing the UI at API Gateway
 
-In the browser, replace the relative `/chat` call with your API Gateway URL:
+Set `window.AGENTCORE_API_BASE` in `static/index.html` to your API Gateway URL:
 
-```javascript
-const API_BASE = "https://<api-id>.execute-api.<region>.amazonaws.com";
-fetch(`${API_BASE}/chat`, { method: "POST", /* ... */ });
+```html
+<script>
+    window.AGENTCORE_API_BASE = "https://<api-id>.execute-api.<region>.amazonaws.com";
+</script>
 ```
 
-Enable CORS on API Gateway for your UI origin, and add `OPTIONS` handling (HTTP
-APIs provide CORS configuration without a Lambda change).
+Every UI request then goes to `POST {AGENTCORE_API_BASE}/chat`, including
+change quality assessment (`agent: "change"`). Enable CORS on API Gateway for
+your UI origin, and add `OPTIONS` handling (HTTP APIs provide CORS
+configuration without a Lambda change).
 
 ### Network notes
 
@@ -385,15 +359,15 @@ Adding UI controls is a separate (optional) step.
 
 ### How requests reach an agent
 
-1. The request carries an optional `agent` key (`{"message": "...", "agent": "rca"}`).
+1. The request carries an optional `agent` key (`{"message": "...", "agent": "rca_agent"}`).
 2. `graph.py` routes to that key when it is registered.
 3. Otherwise the router uses a keyword hint, then an LLM classifier that is
    given each agent's **description** (the second argument to `register`).
-4. If nothing matches, the default agent (`snow`) handles it.
+4. If nothing matches, the default agent (`snow_agent`) handles it.
 
 ### Backend checklist
 
-1. **Settings** — add any new IDs/prompts to `config.py` and `.env`
+1. **Settings** — add any new settings/prompts to `config.py` and `.env`
    (and `.env.example`):
    ```python
    # config.py
@@ -406,45 +380,41 @@ Adding UI controls is a separate (optional) step.
 
    ```python
    class BaseAgent(ABC):
-       async def invoke(self, session_id: str, prompt: str) -> str: ...
+       async def invoke(
+           self,
+           session_id: str,
+           prompt: str,
+           table_name: str | None = None,
+       ) -> str: ...
    ```
 
    Pick the closest starting point:
 
-   **a) RAG over the vector store** (like SNOW / RCA): subclass `RAGAgent`
-   and supply a table, `top_k`, and system prompt. Embedding, hybrid search,
-   RRF fusion, and reranking are inherited.
+   **a) RAG over the vector store** (like SNOW / RCA): copy the retrieval
+   methods from `agents/snow_agent.py` (or `rca_agent.py`) into the new agent
+   and adjust the table, `top_k`, and system prompt. Each agent owns its full
+   implementation — embedding, hybrid search, RRF fusion, reranking, and the
+   LLM call. Only `agents/reranker.py` is shared.
 
    ```python
    # agents/kb_agent.py
-   from .rag_agent import RAGAgent
+   from .base import BaseAgent
+   from .reranker import BedrockReranker, reciprocal_rank_fusion
    from config import settings
 
    KB_PROMPT = "You are a knowledge-base assistant. Answer using the retrieved records."
 
-   class KBAgent(RAGAgent):
+   class KBAgent(BaseAgent):
        def __init__(self):
-           super().__init__(
-               table_name=settings.KB_AGENT_TABLE_NAME,
-               top_k=settings.KB_AGENT_TOP_K,
-               system_prompt=KB_PROMPT,
-               max_tokens=settings.KB_AGENT_MAX_TOKENS,
-           )
+           self.table_name = settings.KB_AGENT_TABLE_NAME
+           self.top_k = settings.KB_AGENT_TOP_K
+           self.max_tokens = settings.KB_AGENT_MAX_TOKENS
+           self.system_prompt = KB_PROMPT
+           # ... copy the RAG methods from snow_agent.py
    ```
 
    **b) Plain LLM agent** (like Chat): subclass `BaseAgent` and call
    `bedrock-runtime` `converse` directly. See `agents/chat_agent.py`.
-
-   **c) Bedrock Agent** — reuse `agents/bedrock_agent.py`:
-   ```python
-   self.register(
-       "solution",
-       BedrockAgent(settings.SOLUTION_AGENT_ID, settings.SOLUTION_AGENT_ALIAS_ID),
-       "Recommends remediation steps.",
-   )
-   ```
-   The `solution` agent is already wired this way and only registers when
-   both env vars are set.
 
 3. **Register it** in `orchestrator.py:_register_agents()`:
 
@@ -460,7 +430,7 @@ Adding UI controls is a separate (optional) step.
      logs and monitor metrics.
    - The description is what the LLM router sees — make it specific and
      distinct from the other agents.
-   - `default=True` is only for the fallback agent (currently `snow`); leave
+   - `default=True` is only for the fallback agent (currently `snow_agent`); leave
      it off for new agents.
    - `register()` rebuilds the compiled graph, so `graph.py` needs no edits.
 

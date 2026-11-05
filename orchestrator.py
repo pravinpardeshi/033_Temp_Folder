@@ -1,10 +1,10 @@
+import re
 from typing import Dict, Optional, Tuple
 
 import boto3
 
 from agents.base import BaseAgent
-from agents.bedrock_agent import BedrockAgent
-from agents.chat_agent import ChatAgent
+from agents.change_qa_agent import ChangeQAAgent
 from agents.rca_agent import RCAAgent
 from agents.snow_agent import SnowAgent
 from config import settings
@@ -15,11 +15,20 @@ class AgentOrchestrator:
     """LangGraph-backed orchestrator.
 
     Adding a new agent:
-      1. Add its IDs/prompt to ``config.py`` and ``.env``.
-      2. Create/choose an agent class in ``agents/``.
+      1. Add its settings/prompt to ``config.py`` and ``.env``.
+      2. Create an agent class in ``agents/``.
       3. Register it in ``_register_agents`` below.
     The graph is rebuilt automatically on registration.
     """
+
+    # Backwards-compatible names accepted from the API/UI.
+    _AGENT_ALIASES = {
+        "chat": "snow_agent",
+        "snow": "snow_agent",
+        "rca": "rca_agent",
+        "change": "change_qa_agent",
+        "change_qa": "change_qa_agent",
+    }
 
     def __init__(self):
         # key -> (agent, description used by the intent router)
@@ -30,37 +39,17 @@ class AgentOrchestrator:
         self._register_agents()
 
     def _register_agents(self) -> None:
-        self.register(
-            "snow",
-            SnowAgent(),
-            "Question/answer over closed ServiceNOW incidents.",
-            default=True,
-        )
+        self.register("snow_agent", SnowAgent(), "Question/answer over closed ServiceNOW incidents.", default=True,)
+        self.register("rca_agent", RCAAgent(), "Root cause analysis for a new incident using closed incident history.",)
+        self.register("change_qa_agent", ChangeQAAgent(), "Quality assessment for a ServiceNOW change request by change number.",)
 
-        self.register(
-            "chat",
-            ChatAgent(),
-            "General conversation that does not need incident data.",
-        )
-
-        self.register(
-            "rca",
-            RCAAgent(),
-            "Root cause analysis for a new incident using closed incident history.",
-        )
-
-        if settings.SOLUTION_AGENT_ID and settings.SOLUTION_AGENT_ALIAS_ID:
-            self.register(
-                "solution",
-                BedrockAgent(settings.SOLUTION_AGENT_ID, settings.SOLUTION_AGENT_ALIAS_ID),
-                "Recommends remediation steps and solutions.",
-            )
 
     def register(self, key: str, agent: BaseAgent, description: str, default: bool = False) -> None:
         self._agents[key] = (agent, description)
         if default or self._default_key is None:
             self._default_key = key
         self._graph = build_graph(self._agents, self._default_key, self._classify_intent)
+
 
     @property
     def agent_keys(self) -> list:
@@ -74,15 +63,26 @@ class AgentOrchestrator:
             )
         return self._router_client
 
+
+    def _resolve_agent_key(self, key: Optional[str]) -> Optional[str]:
+        """Normalize an incoming agent name and reject unknown keys."""
+        if not key:
+            return None
+        normalized = str(key).strip().lower()
+        normalized = self._AGENT_ALIASES.get(normalized, normalized)
+        return normalized if normalized in self._agents else None
+
     def _keyword_route(self, prompt: str) -> Optional[str]:
         """Cheap deterministic hints before falling back to the LLM router."""
         text = (prompt or "").lower()
+        if "change_qa_agent" in self._agents and re.search(r"\bchg\d+\b", text):
+            return "change_qa_agent"
         rca_terms = (
             "root cause", "rca", "why did", "why is", "why does",
             "reason for", "caused by", "cause of",
         )
-        if "rca" in self._agents and any(term in text for term in rca_terms):
-            return "rca"
+        if "rca_agent" in self._agents and any(term in text for term in rca_terms):
+            return "rca_agent"
         return None
 
     def _classify_intent(self, prompt: str) -> str:
@@ -91,9 +91,8 @@ class AgentOrchestrator:
         if hinted:
             return hinted
 
-        choices = "\n".join(
-            f"- {key}: {description}" for key, (_, description) in self._agents.items()
-        )
+        choices = "\n".join(f"- {key}: {description}" for key, (_, description) in self._agents.items())
+
         classification_prompt = (
             "Choose the single best agent for the user's question.\n"
             f"Agents:\n{choices}\n\n"
@@ -117,15 +116,11 @@ class AgentOrchestrator:
             pass
         return self._default_key
 
-    async def route_query(
-        self,
-        session_id: str,
-        prompt: str,
-        agent_key: Optional[str] = None,
-        table_name: Optional[str] = None,
-    ) -> str:
+
+    async def route_query(self, session_id: str, prompt: str, agent_key: Optional[str] = None, table_name: Optional[str] = None,) -> str:
         if not self._agents:
             return "No active agents available."
+        agent_key = self._resolve_agent_key(agent_key)
         return await run_graph(
             self._graph, session_id, prompt, agent_key, table_name=table_name
         )

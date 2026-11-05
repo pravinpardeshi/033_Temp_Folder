@@ -6,11 +6,8 @@ queries to produce a better top-k context for the LLM.
 """
 
 from typing import Dict, Iterable, List, Sequence
-
 import boto3
-
 from config import settings
-
 
 def reciprocal_rank_fusion(ranked_lists: Sequence[Sequence[str]], k: int = 60,) -> List[str]:
     """Fuse multiple ranked result lists using RRF.
