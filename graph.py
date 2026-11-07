@@ -2,7 +2,7 @@
 
 Graph shape:
 
-    START -> router -> (snow_agent | rca_agent | change_qa_agent) -> END
+    START -> router -> (snow_agent | rca_agent | change_qa_agent | monitoring_agent) -> END
 
 - ``router`` decides which agent handles the request. It honors an explicit
   ``requested_agent`` (from the API payload), otherwise it asks an LLM to

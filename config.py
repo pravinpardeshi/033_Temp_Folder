@@ -12,6 +12,23 @@ class Settings(BaseSettings):
     AWS_REGION: str = "us-east-1"
     AWS_ACCESS_KEY_ID: str | None = None
     AWS_SECRET_ACCESS_KEY: str | None = None
+    AWS_SESSION_TOKEN: str | None = None
+
+    # Monitoring dashboard
+    # Default UI mode. Use "demo" for synthetic data or "live" for in-process
+    # metrics plus AWS CloudWatch data.
+    MONITOR_DEFAULT_MODE: str = "demo"
+    MONITOR_AWS_ENABLED: bool = True
+    MONITOR_LOOKBACK_MINUTES: int = 60
+    MONITOR_AWS_CACHE_SECONDS: int = 60
+    # CloudWatch dimensions. Leave a name blank to skip that service.
+    MONITOR_LAMBDA_FUNCTION_NAME: str = ""
+    # API Gateway type: "http" uses ApiId + Stage; "rest" uses ApiName + Stage.
+    MONITOR_API_GATEWAY_TYPE: str = "http"
+    MONITOR_API_GATEWAY_API_ID: str = ""
+    MONITOR_API_GATEWAY_API_NAME: str = ""
+    MONITOR_API_GATEWAY_STAGE: str = ""
+    MONITOR_BEDROCK_MODEL_ID: str = ""
 
     # Model Configurations
     LLM_MODEL_ID: str = "anthropic.claude-3-5-sonnet-20240620-v1:0"

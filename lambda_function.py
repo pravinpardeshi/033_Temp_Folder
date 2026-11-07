@@ -13,10 +13,7 @@ import uuid
 import boto3
 from botocore.config import Config
 
-client = boto3.client(
-    "bedrock-agentcore",
-    config=Config(retries={"max_attempts": 3, "mode": "standard"}),
-)
+client = boto3.client( "bedrock-agentcore", config=Config(retries={"max_attempts": 3, "mode": "standard"}),)
 RUNTIME_ARN = os.environ["AGENT_RUNTIME_ARN"]
 
 
@@ -43,11 +40,7 @@ def handler(event, context):
         body = _json_body(event)
         session_id = body.get("session_id") or str(uuid.uuid4())
 
-        prompt = (
-            body.get("message")
-            or body.get("prompt")
-            or body.get("change_number")
-        )
+        prompt = ( body.get("message") or body.get("prompt") or body.get("change_number"))
         if not isinstance(prompt, str) or not prompt.strip():
             return _response(400, {"detail": "Missing 'message' or 'prompt'."})
 

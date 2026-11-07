@@ -6,6 +6,7 @@ Incident-specific questions should use the `snow` (Q&A) or `rca` agents.
 
 import boto3
 
+import monitoring
 from .base import BaseAgent
 from config import settings
 
@@ -35,6 +36,14 @@ class ChatAgent(BaseAgent):
                     "maxTokens": settings.CHAT_MAX_TOKENS,
                     "temperature": settings.CHAT_TEMPERATURE,
                 },
+            )
+            usage = response.get("usage") or {}
+            monitoring.record_token_usage(
+                model_id=settings.LLM_MODEL_ID,
+                input_tokens=usage.get("inputTokens", 0),
+                output_tokens=usage.get("outputTokens", 0),
+                agent_key="chat_agent",
+                operation="converse",
             )
             return response["output"]["message"]["content"][0]["text"]
         except Exception as e:

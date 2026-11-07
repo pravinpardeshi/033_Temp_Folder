@@ -16,31 +16,45 @@ BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = BedrockAgentCoreApp()
+app.add_middleware(monitoring.MonitoringMiddleware)
 
 
 async def _run_agent(prompt: str, session_id: str, agent_key: str | None = None, table_name: str | None = None,) -> str:
     """Execute the orchestrator and record monitoring metrics."""
     start = time.time()
+    capture_token = monitoring.start_token_capture()
+
     try:
         answer = await orchestrator.route_query(session_id, prompt, agent_key=agent_key, table_name=table_name)
-        monitoring.record_invocation(
-            status="success",
-            query=prompt,
-            latency=time.time() - start,
-            session_id=session_id,
-            input_tokens=monitoring.estimate_tokens(prompt),
-            output_tokens=monitoring.estimate_tokens(answer),
-        )
-        return answer
     except Exception:
+        usage = monitoring.finish_token_capture(capture_token)
         monitoring.record_invocation(
             status="error",
             query=prompt,
             latency=time.time() - start,
             session_id=session_id,
-            input_tokens=monitoring.estimate_tokens(prompt),
+            input_tokens=usage["input_tokens"] if usage["calls"] else monitoring.estimate_tokens(prompt),
+            output_tokens=usage["output_tokens"],
+            llm_calls=usage["calls"],
+            token_source="bedrock" if usage["calls"] else "estimated",
+            models=usage["models"],
         )
         raise
+
+    usage = monitoring.finish_token_capture(capture_token)
+    has_usage = usage["calls"] > 0
+    monitoring.record_invocation(
+        status="success",
+        query=prompt,
+        latency=time.time() - start,
+        session_id=session_id,
+        input_tokens=usage["input_tokens"] if has_usage else monitoring.estimate_tokens(prompt),
+        output_tokens=usage["output_tokens"] if has_usage else monitoring.estimate_tokens(answer),
+        llm_calls=usage["calls"],
+        token_source="bedrock" if has_usage else "estimated",
+        models=usage["models"],
+    )
+    return answer
 
 
 @app.entrypoint
@@ -137,7 +151,9 @@ app.router.routes.extend([
     Route("/api/change/assess", assess_change, methods=["POST"]),
     Route("/api/tables", tables, methods=["GET"]),
     Route("/health", monitoring.health, methods=["GET"]),
+    Route("/api/monitor/dashboard", monitoring.get_dashboard, methods=["GET"]),
     Route("/api/monitor/metrics", monitoring.get_metrics, methods=["GET"]),
+    Route("/api/monitor/endpoints", monitoring.get_endpoints, methods=["GET"]),
     Route("/api/monitor/invocations", monitoring.get_invocations, methods=["GET"]),
     Route("/favicon.ico", monitoring.favicon, methods=["GET"]),
     Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"),

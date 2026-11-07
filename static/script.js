@@ -5,6 +5,7 @@
     const CONVOS_KEY = "agentcore.conversations.v1";
     const ACTIVE_KEY = "agentcore.activeConversation";
     const TABLE_KEY = "agentcore.table";
+    const MONITOR_MODE_KEY = "agentcore.monitor.mode";
     const MAX_CONVERSATIONS = 30;
     const API_BASE = (window.AGENTCORE_API_BASE || "").replace(/\/+$/, "");
     const CHAT_PATH = "/chat";
@@ -93,6 +94,22 @@
         changeSubmit: $("#changeSubmit"),
         changeStatus: $("#changeStatus"),
         changeResult: $("#changeResult"),
+        dashboardView: $("#dashboardView"),
+        dashStats: $("#dashStats"),
+        dashEndpoints: $("#dashEndpoints"),
+        dashEndpointCount: $("#dashEndpointCount"),
+        dashInvocations: $("#dashInvocations"),
+        dashInvocationCount: $("#dashInvocationCount"),
+        dashUpdated: $("#dashUpdated"),
+        dashRefresh: $("#dashRefresh"),
+        dashSource: $("#dashSource"),
+        dashModeDemo: $("#dashModeDemo"),
+        dashModeLive: $("#dashModeLive"),
+        dashTrend: $("#dashTrend"),
+        dashTrendMeta: $("#dashTrendMeta"),
+        dashAwsServices: $("#dashAwsServices"),
+        dashAwsStatus: $("#dashAwsStatus"),
+        dashAwsMessage: $("#dashAwsMessage"),
     };
 
     const messagesEl = document.createElement("div");
@@ -107,6 +124,10 @@
         sending: false,
         changeSending: false,
         view: "chat",
+        dashboardLoading: false,
+        dashboardPending: false,
+        dashboardTimer: null,
+        dashboardMode: safeGet(MONITOR_MODE_KEY) === "live" ? "live" : "demo",
         tables: FALLBACK_TABLES.slice(),
         defaultTable: FALLBACK_TABLES[0],
         table: safeGet(TABLE_KEY) || FALLBACK_TABLES[0],
@@ -238,23 +259,38 @@
     /* ---------------- views ---------------- */
 
     function setView(view) {
-        state.view = view === "change" ? "change" : "chat";
+        state.view = view === "change" || view === "monitor" ? view : "chat";
+        const isChat = state.view === "chat";
         const isChange = state.view === "change";
+        const isMonitor = state.view === "monitor";
 
-        el.chat.hidden = isChange;
-        el.composer.hidden = isChange;
+        el.chat.hidden = !isChat;
+        el.composer.hidden = !isChat;
         el.changeView.hidden = !isChange;
-        el.topbarHint.hidden = isChange;
+        el.dashboardView.hidden = !isMonitor;
+        el.topbarHint.hidden = !isChat;
+
+        $$(".agent-item[data-agent]").forEach((btn) => {
+            const active = isChat && btn.dataset.agent === state.agent;
+            btn.classList.toggle("active", active);
+            btn.setAttribute("aria-checked", active ? "true" : "false");
+        });
 
         $$("[data-tool]").forEach((btn) => {
-            btn.classList.toggle("active", isChange && btn.dataset.tool === "change");
+            btn.classList.toggle("active", !isChat && btn.dataset.tool === state.view);
         });
 
         if (isChange) {
+            stopDashboard();
             el.activeAgentName.textContent = "Change QA";
             el.activeAgentChip.textContent = "change";
             el.changeNumber.focus();
+        } else if (isMonitor) {
+            el.activeAgentName.textContent = "Dashboard";
+            el.activeAgentChip.textContent = "dashboard";
+            startDashboard();
         } else {
+            stopDashboard();
             const meta = AGENTS[state.agent];
             el.activeAgentName.textContent = meta.label;
             el.activeAgentChip.textContent = meta.label.toLowerCase();
@@ -846,6 +882,236 @@
         }
     });
 
+    /* ---------------- monitoring dashboard ---------------- */
+
+    function formatNumber(value) {
+        return Number(value || 0).toLocaleString();
+    }
+
+    function formatMs(value) {
+        const ms = Number(value || 0);
+        return ms >= 1000 ? (ms / 1000).toFixed(2) + " s" : ms.toFixed(0) + " ms";
+    }
+
+    function formatClock(value) {
+        if (!value) return "—";
+        const date = new Date(value);
+        return isNaN(date.getTime())
+            ? "—"
+            : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+
+    function statCard(label, value, meta) {
+        return '<div class="stat-card">' +
+            '<span class="stat-label">' + escapeHtml(label) + "</span>" +
+            '<strong class="stat-value">' + escapeHtml(value) + "</strong>" +
+            '<span class="stat-meta">' + escapeHtml(meta || "") + "</span>" +
+            "</div>";
+    }
+
+    function formatMetric(metric) {
+        const value = Number(metric.value || 0);
+        if (metric.unit === "ms") return formatMs(value);
+        if (metric.unit === "%") return value.toFixed(2) + "%";
+        return formatNumber(value);
+    }
+
+    function renderTrend(points) {
+        const trend = points || [];
+        if (!trend.length) {
+            el.dashTrend.innerHTML = '<div class="dash-empty">No trend data yet.</div>';
+            return;
+        }
+        const max = Math.max.apply(null, trend.map((point) => Number(point.requests || 0)).concat([1]));
+        el.dashTrend.innerHTML = trend.map((point) => {
+            const requests = Number(point.requests || 0);
+            const height = Math.max(4, Math.round((requests / max) * 100));
+            const pointDate = new Date(point.timestamp);
+            const label = isNaN(pointDate.getTime())
+                ? ""
+                : pointDate.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            const title = requests + " requests · " + formatMs(point.latency_ms) + " · " + formatNumber(point.tokens) + " tokens";
+            return '<div class="trend-bar" title="' + escapeHtml(title) + '">' +
+                '<span class="trend-fill" style="height:' + height + '%"></span>' +
+                "<small>" + escapeHtml(label) + "</small>" +
+                "</div>";
+        }).join("");
+    }
+
+    function renderAws(aws) {
+        const feed = aws || {};
+        const simulated = Boolean(feed.simulated);
+        const configured = Boolean(feed.configured);
+        const label = simulated ? "Simulated" : configured ? "CloudWatch" : "Not configured";
+        el.dashAwsStatus.textContent = feed.region ? label + " · " + feed.region : label;
+
+        const services = feed.services || [];
+        if (!services.length) {
+            el.dashAwsServices.innerHTML = '<div class="dash-empty">No AWS service metrics available.</div>';
+        } else {
+            el.dashAwsServices.innerHTML = services.map((service) => {
+                const metrics = (service.metrics || []).map((metric) =>
+                    '<div class="aws-metric">' +
+                    '<span>' + escapeHtml(metric.label) + "</span>" +
+                    "<strong>" + escapeHtml(formatMetric(metric)) + "</strong>" +
+                    "</div>"
+                ).join("");
+                return '<div class="aws-card">' +
+                    '<div class="aws-card-head"><strong>' + escapeHtml(service.service) + "</strong>" +
+                    "<small>" + escapeHtml(service.resource || "") + "</small></div>" +
+                    '<div class="aws-metric-grid">' + metrics + "</div>" +
+                    "</div>";
+            }).join("");
+        }
+
+        if (feed.message) {
+            el.dashAwsMessage.hidden = false;
+            el.dashAwsMessage.textContent = feed.message;
+        } else {
+            el.dashAwsMessage.hidden = true;
+            el.dashAwsMessage.textContent = "";
+        }
+    }
+
+    function updateModeButtons() {
+        const live = state.dashboardMode === "live";
+        el.dashModeDemo.classList.toggle("active", !live);
+        el.dashModeLive.classList.toggle("active", live);
+        el.dashModeDemo.setAttribute("aria-pressed", String(!live));
+        el.dashModeLive.setAttribute("aria-pressed", String(live));
+        el.dashSource.textContent = live ? "Live data" : "Demo data";
+        el.dashSource.classList.toggle("live", live);
+    }
+
+    function renderDashboard(data) {
+        const metrics = data.stats || {};
+        const endpoints = data.endpoints || [];
+        const recent = data.invocations || [];
+
+        const tokenSource = metrics.token_source || (metrics.tokens_estimated === false ? "bedrock" : "estimated");
+        const tokenLabel = tokenSource === "bedrock" ? "Bedrock tokens" : tokenSource === "demo" ? "Tokens (demo)" : "Estimated tokens";
+        const llmCalls = Number(metrics.llm_calls || 0);
+        const tokenMeta = "In " + formatNumber(metrics.input_tokens) + " · Out " + formatNumber(metrics.output_tokens);
+        const callsMeta = tokenSource === "bedrock" ? "Exact Bedrock usage" : tokenSource === "demo" ? "Demo data" : "No usage recorded yet";
+
+        el.dashStats.innerHTML = [
+            statCard("Agent requests", formatNumber(metrics.total_requests), "Since runtime start"),
+            statCard("Bedrock calls", formatNumber(llmCalls), callsMeta),
+            statCard(tokenLabel, formatNumber(metrics.total_tokens), tokenMeta),
+            statCard("Avg agent latency", formatMs(metrics.avg_latency_ms), "Per invocation"),
+            statCard("Error rate", Number(metrics.error_rate || 0).toFixed(2) + "%", "Failed invocations"),
+            statCard("Active sessions", formatNumber(metrics.active_sessions), "Recent sessions"),
+            statCard("Uptime", data.uptime || "—", "Current process"),
+        ].join("");
+
+        el.dashEndpointCount.textContent = endpoints.length + (endpoints.length === 1 ? " endpoint" : " endpoints");
+        if (!endpoints.length) {
+            el.dashEndpoints.innerHTML = '<tr><td colspan="6"><div class="dash-empty">No API requests recorded yet.</div></td></tr>';
+        } else {
+            el.dashEndpoints.innerHTML = endpoints.map((endpoint) => {
+                const status = endpoint.last_status;
+                const statusClass = status >= 400 ? "bad" : status ? "good" : "";
+                return "<tr>" +
+                    '<td><span class="method-badge ' + escapeHtml(String(endpoint.method || "").toLowerCase()) + '">' + escapeHtml(endpoint.method || "") + "</span>" +
+                    '<code class="endpoint-path">' + escapeHtml(endpoint.path || "") + "</code></td>" +
+                    "<td>" + formatNumber(endpoint.requests) + "</td>" +
+                    "<td>" + formatMs(endpoint.avg_latency_ms) + "</td>" +
+                    "<td>" + formatMs(endpoint.p95_latency_ms) + "</td>" +
+                    "<td>" + formatNumber(endpoint.errors) + "</td>" +
+                    '<td><span class="status-pill ' + statusClass + '">' + escapeHtml(status || "—") + "</span></td>" +
+                    "</tr>";
+            }).join("");
+        }
+
+        el.dashInvocationCount.textContent = recent.length + " recent";
+        if (!recent.length) {
+            el.dashInvocations.innerHTML = '<div class="dash-empty">No agent invocations yet.</div>';
+        } else {
+            el.dashInvocations.innerHTML = recent.map((item) => {
+                const ok = item.status !== "error";
+                return '<div class="invocation-row">' +
+                    '<span class="invocation-dot ' + (ok ? "good" : "bad") + '"></span>' +
+                    '<div class="invocation-copy">' +
+                    '<strong>' + escapeHtml(item.query || "(empty query)") + "</strong>" +
+                    '<small>' + escapeHtml(formatClock(item.timestamp)) + " · " + formatNumber(item.tokens) + " tokens" +
+                    (item.llm_calls ? " · " + formatNumber(item.llm_calls) + " LLM" : "") + "</small>" +
+                    "</div>" +
+                    '<span class="invocation-latency">' + formatMs(item.latency * 1000) + "</span>" +
+                    "</div>";
+            }).join("");
+        }
+
+        renderTrend(data.trend || []);
+        renderAws(data.aws || {});
+        updateModeButtons();
+        el.dashUpdated.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+
+    function renderDashboardError(message) {
+        el.dashUpdated.textContent = "Update failed";
+        el.dashStats.innerHTML = '<div class="dash-error">' + escapeHtml(message || "Could not load monitoring metrics.") + "</div>";
+        el.dashEndpoints.innerHTML = "";
+        el.dashInvocations.innerHTML = "";
+        el.dashEndpointCount.textContent = "";
+        el.dashInvocationCount.textContent = "";
+        el.dashTrend.innerHTML = "";
+        el.dashAwsServices.innerHTML = "";
+        el.dashAwsStatus.textContent = "Unavailable";
+        el.dashAwsMessage.hidden = true;
+    }
+
+    async function loadDashboard() {
+        if (state.dashboardLoading) {
+            state.dashboardPending = true;
+            return;
+        }
+        state.dashboardLoading = true;
+        state.dashboardPending = false;
+        el.dashRefresh.disabled = true;
+        try {
+            const url = apiUrl("/api/monitor/dashboard?mode=" + encodeURIComponent(state.dashboardMode) + "&_=" + Date.now());
+            const data = await fetchJSON(url, { cache: "no-store" });
+            if (data.error) throw new Error(data.error);
+            renderDashboard(data);
+            updateRuntimeStatus("online");
+        } catch (error) {
+            renderDashboardError(error.message || "Could not load monitoring metrics.");
+            updateRuntimeStatus("error");
+        } finally {
+            state.dashboardLoading = false;
+            el.dashRefresh.disabled = false;
+            if (state.dashboardPending) {
+                state.dashboardPending = false;
+                loadDashboard();
+            }
+        }
+    }
+
+    function setDashboardMode(mode) {
+        state.dashboardMode = mode === "live" ? "live" : "demo";
+        safeSet(MONITOR_MODE_KEY, state.dashboardMode);
+        updateModeButtons();
+        if (state.view === "monitor") loadDashboard();
+    }
+
+    function startDashboard() {
+        stopDashboard();
+        updateModeButtons();
+        loadDashboard();
+        state.dashboardTimer = setInterval(loadDashboard, 10000);
+    }
+
+    function stopDashboard() {
+        if (state.dashboardTimer) {
+            clearInterval(state.dashboardTimer);
+            state.dashboardTimer = null;
+        }
+    }
+
+    el.dashRefresh.addEventListener("click", loadDashboard);
+    el.dashModeDemo.addEventListener("click", () => setDashboardMode("demo"));
+    el.dashModeLive.addEventListener("click", () => setDashboardMode("live"));
+
     el.newChatBtn.addEventListener("click", () => {
         if (state.sending) return;
         setView("chat");
@@ -941,5 +1207,5 @@
     }
 
     updateSendState();
-    el.input.focus();
+    setView("monitor");
 })();

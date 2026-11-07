@@ -5,22 +5,23 @@ A ChatGPT-style chatbot for closed ServiceNOW incidents. The backend runs on
 retrieves context from a **PostgreSQL + pgvector** incident store on **Amazon
 RDS** (IAM database authentication, no passwords).
 
-Three agents are registered in the orchestrator:
+Four agents are registered in the orchestrator:
 
 | Agent | Key | What it does |
 | --- | --- | --- |
 | SNOW agent | `snow_agent` | Answers questions over closed ServiceNOW incidents. |
 | RCA agent | `rca_agent` | Analyzes the root cause of a **new** incident using similar closed incidents. |
 | Change QA agent | `change_qa_agent` | Assesses a change request by number (UI form, not chat). |
+| Monitoring agent | `monitoring_agent` | Reports application health, token usage, and endpoint response times. |
 
 Legacy keys are accepted as aliases: `chat` → `snow_agent`, `snow` →
 `snow_agent`, `rca` → `rca_agent`, `change` / `change_qa` →
-`change_qa_agent`.
+`change_qa_agent`; `monitor` / `monitoring` / `metrics` → `monitoring_agent`.
 
 Routing is implemented with **LangGraph**:
 
 ```
-START -> router -> (snow_agent | rca_agent | change_qa_agent) -> END
+START -> router -> (snow_agent | rca_agent | change_qa_agent | monitoring_agent) -> END
 ```
 
 `router` respects an explicit `agent` in the request; otherwise it uses cheap
@@ -68,7 +69,18 @@ Health check: `curl http://localhost:8080/ping`
 
 | Variable | Purpose |
 | --- | --- |
-| `AWS_REGION` | Region for Bedrock, RDS. |
+| `AWS_REGION` | Region for Bedrock, RDS, and CloudWatch. |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Optional static credentials for local runs; prefer an IAM role or environment credentials. |
+| `AWS_SESSION_TOKEN` | Optional token for temporary STS credentials. |
+| `MONITOR_DEFAULT_MODE` | Dashboard mode on first load: `demo` (default) or `live`. |
+| `MONITOR_AWS_ENABLED` | Enable AWS CloudWatch metrics in live mode (default true). |
+| `MONITOR_LOOKBACK_MINUTES`, `MONITOR_AWS_CACHE_SECONDS` | CloudWatch window and cache duration (defaults 60 / 60). |
+| `MONITOR_LAMBDA_FUNCTION_NAME` | Lambda function to query for invocations, errors, duration, and throttles. |
+| `MONITOR_API_GATEWAY_TYPE` | API Gateway type: `http` (default) or `rest`. |
+| `MONITOR_API_GATEWAY_API_ID` | HTTP API ID (`ApiId`) used for HTTP API CloudWatch metrics. |
+| `MONITOR_API_GATEWAY_API_NAME` | REST API name used when `MONITOR_API_GATEWAY_TYPE=rest`. |
+| `MONITOR_API_GATEWAY_STAGE` | API Gateway stage name; HTTP APIs commonly use `$default`. |
+| `MONITOR_BEDROCK_MODEL_ID` | Bedrock model or inference-profile ID for invocation and token metrics. |
 | `LLM_MODEL_ID` | Bedrock model used for answers (e.g. Claude). |
 | `LLM_MAX_TOKENS` | Max output tokens for the QA agent. |
 | `LLM_TEMPERATURE` | Sampling temperature for RAG answers (default 0.2). |
@@ -508,9 +520,123 @@ description, then confirm the response and the invocation log show the new key.
 | --- | --- |
 | `GET /ping` | AgentCore health contract. |
 | `GET /health` | Dashboard health probe. |
-| `GET /api/monitor/metrics` | Requests, tokens, latency, error rate, uptime. |
+| `GET /api/monitor/dashboard?mode=demo\|live` | Unified dashboard payload; defaults to `MONITOR_DEFAULT_MODE` (`demo`). |
+| `GET /api/monitor/metrics` | Requests, tokens, latency, error rate, uptime, and per-endpoint response times. |
+| `GET /api/monitor/endpoints` | Per-endpoint request counts, average/P95 latency, and errors. |
 | `GET /api/monitor/invocations?limit=50` | Recent invocation log. |
 | `GET /api/tables` | Tables available to the SNOW agent and the default table. |
+
+The UI dashboard defaults to **Demo** mode and can be switched to **Live** with
+the toggle. Live mode combines in-process application metrics with AWS
+CloudWatch metrics. Configure credentials and resource names in `config.py`:
+`MONITOR_LAMBDA_FUNCTION_NAME`, `MONITOR_API_GATEWAY_TYPE`,
+`MONITOR_API_GATEWAY_API_ID` (HTTP), `MONITOR_API_GATEWAY_API_NAME` (REST),
+`MONITOR_API_GATEWAY_STAGE`, and `MONITOR_BEDROCK_MODEL_ID`. AWS metrics are
+cached for `MONITOR_AWS_CACHE_SECONDS`.
+
+For an **HTTP API**, use the API ID and stage:
+
+```python
+MONITOR_API_GATEWAY_TYPE = "http"
+MONITOR_API_GATEWAY_API_ID = "abc123def4"   # API Gateway HTTP API ID
+MONITOR_API_GATEWAY_STAGE = "$default"      # or your named stage
+```
+
+HTTP API metrics use the `ApiId` + `Stage` dimensions and the `5xx` metric.
+REST APIs use `ApiName` + `Stage` and the `5XXError` metric.
+
+### Connecting live mode to AWS
+
+Live mode works with either an attached IAM role or credentials supplied in
+`config.py`:
+
+```python
+# config.py (inside Settings, or as environment variables)
+AWS_REGION = "us-east-1"
+AWS_ACCESS_KEY_ID = "..."          # optional if using an IAM role
+AWS_SECRET_ACCESS_KEY = "..."      # optional if using an IAM role
+AWS_SESSION_TOKEN = ""             # optional for temporary credentials
+
+MONITOR_DEFAULT_MODE = "demo"      # "demo" or "live"
+MONITOR_AWS_ENABLED = True
+MONITOR_LOOKBACK_MINUTES = 60
+MONITOR_AWS_CACHE_SECONDS = 60
+
+MONITOR_LAMBDA_FUNCTION_NAME = "my-agent-lambda"
+
+# HTTP API Gateway
+MONITOR_API_GATEWAY_TYPE = "http"
+MONITOR_API_GATEWAY_API_ID = "abc123def4"
+MONITOR_API_GATEWAY_STAGE = "$default"
+
+MONITOR_BEDROCK_MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+```
+
+Leave any resource value blank to skip that service. The identity running the
+application needs CloudWatch read access:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": ["cloudwatch:GetMetricData"],
+      "Resource": "*"
+    }
+  ]
+}
+```
+
+The AWS service feed reads these CloudWatch metrics:
+
+| AWS service | Metrics |
+| --- | --- |
+| AWS Lambda | `Invocations`, `Errors`, `Duration`, `Throttles` |
+| Amazon API Gateway (HTTP) | `Count`, `5xx`, `Latency`, `IntegrationLatency` |
+| Amazon API Gateway (REST) | `Count`, `5XXError`, `Latency`, `IntegrationLatency` |
+| Amazon Bedrock | `Invocations`, `InputTokenCount`, `OutputTokenCount`, `InvocationLatency` |
+
+If the UI is hosted separately from the AgentCore runtime, route
+`GET /api/monitor/dashboard` through API Gateway to the runtime; the existing
+proxy Lambda only handles agent chat invocations.
+
+### AWS Bedrock token and call metrics
+
+Live mode can report Bedrock LLM call counts and token usage from CloudWatch.
+Set the exact model or inference-profile ID used by the application:
+
+```python
+MONITOR_BEDROCK_MODEL_ID = "anthropic.claude-3-5-sonnet-20240620-v1:0"
+```
+
+The dashboard’s **AWS service feed** then queries the `AWS/Bedrock` namespace:
+
+| CloudWatch metric | Dashboard meaning |
+| --- | --- |
+| `Invocations` | Bedrock LLM call count |
+| `InputTokenCount` (Sum) | Total input tokens |
+| `OutputTokenCount` (Sum) | Total output tokens |
+| `InvocationLatency` (Average) | Model response latency |
+
+Details and limitations:
+
+- Leave `MONITOR_BEDROCK_MODEL_ID` blank to skip Bedrock CloudWatch metrics.
+- Counts are scoped to the **AWS account, region, and model**, not this
+  application or a single chat session. Usage from other workloads on the same
+  model is included.
+- For cross-Region inference, use the inference-profile identifier as the
+  `ModelId` value.
+- CloudWatch metrics can lag by a few minutes. The dashboard caches AWS metrics
+  for `MONITOR_AWS_CACHE_SECONDS` (default `60`).
+- The AWS identity needs `cloudwatch:GetMetricData`.
+- The application records exact `usage` metadata returned by Bedrock for each
+  LLM call. The dashboard shows the live Bedrock LLM call count and actual
+  input/output tokens for this application, separate from the account-wide
+  CloudWatch aggregate.
+- If a response does not include usage metadata, the application falls back to
+  an estimate based on request/response length; the card label and recent
+  invocation rows indicate whether usage is exact or estimated.
 
 ---
 

@@ -3,8 +3,10 @@ from typing import Dict, Optional, Tuple
 
 import boto3
 
+import monitoring
 from agents.base import BaseAgent
 from agents.change_qa_agent import ChangeQAAgent
+from agents.monitoring_agent import MonitoringAgent
 from agents.rca_agent import RCAAgent
 from agents.snow_agent import SnowAgent
 from config import settings
@@ -28,6 +30,9 @@ class AgentOrchestrator:
         "rca": "rca_agent",
         "change": "change_qa_agent",
         "change_qa": "change_qa_agent",
+        "monitor": "monitoring_agent",
+        "monitoring": "monitoring_agent",
+        "metrics": "monitoring_agent",
     }
 
     def __init__(self):
@@ -42,6 +47,7 @@ class AgentOrchestrator:
         self.register("snow_agent", SnowAgent(), "Question/answer over closed ServiceNOW incidents.", default=True,)
         self.register("rca_agent", RCAAgent(), "Root cause analysis for a new incident using closed incident history.",)
         self.register("change_qa_agent", ChangeQAAgent(), "Quality assessment for a ServiceNOW change request by change number.",)
+        self.register("monitoring_agent", MonitoringAgent(), "Application health, token usage, and API endpoint response times.",)
 
 
     def register(self, key: str, agent: BaseAgent, description: str, default: bool = False) -> None:
@@ -77,6 +83,13 @@ class AgentOrchestrator:
         text = (prompt or "").lower()
         if "change_qa_agent" in self._agents and re.search(r"\bchg\d+\b", text):
             return "change_qa_agent"
+        monitoring_terms = (
+            "monitor", "dashboard", "token usage", "api latency",
+            "endpoint latency", "response time", "uptime", "error rate",
+            "app health", "application health", "system health",
+        )
+        if "monitoring_agent" in self._agents and any(term in text for term in monitoring_terms):
+            return "monitoring_agent"
         rca_terms = (
             "root cause", "rca", "why did", "why is", "why does",
             "reason for", "caused by", "cause of",
@@ -107,6 +120,14 @@ class AgentOrchestrator:
                     "maxTokens": settings.ROUTER_MAX_TOKENS,
                     "temperature": settings.ROUTER_TEMPERATURE,
                 },
+            )
+            usage = response.get("usage") or {}
+            monitoring.record_token_usage(
+                model_id=settings.AGENT_ROUTER_MODEL_ID or settings.LLM_MODEL_ID,
+                input_tokens=usage.get("inputTokens", 0),
+                output_tokens=usage.get("outputTokens", 0),
+                agent_key="router",
+                operation="converse",
             )
             answer = response["output"]["message"]["content"][0]["text"].strip().lower()
             for key in self._agents:

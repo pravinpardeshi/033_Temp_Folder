@@ -80,6 +80,13 @@
                         <small>Change quality assessment</small>
                     </span>
                 </button>
+                <button class="agent-item" data-tool="monitor" type="button" title="Dashboard — Application health and performance">
+                    <span class="agent-icon monitor">M</span>
+                    <span class="agent-copy">
+                        <strong>Dashboard</strong>
+                        <small>Health and performance</small>
+                    </span>
+                </button>
             </div>
 
             <div class="section-label history-label">
@@ -112,15 +119,15 @@
                     <svg viewBox="0 0 24 24" width="18" height="18"><path fill="currentColor" d="M8.6 7.4 10 6l6 6-6 6-1.4-1.4L13.2 12z"/></svg>
                 </button>
                 <div class="topbar-title">
-                    <span id="activeAgentName">Chat</span>
-                    <span class="chip" id="activeAgentChip">chat</span>
+                    <span id="activeAgentName">Dashboard</span>
+                    <span class="chip" id="activeAgentChip">dashboard</span>
                 </div>
                 <div class="topbar-actions">
-                    <span class="kbd-hint" id="topbarHint"><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
+                    <span class="kbd-hint" id="topbarHint" hidden><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline</span>
                 </div>
             </header>
 
-            <section class="chat-scroll" id="chat" aria-live="polite">
+            <section class="chat-scroll" id="chat" hidden aria-live="polite">
                 <div class="welcome" id="welcome">
                     <span class="hero-pill">AWS Bedrock AgentCore</span>
                     <h1>How can I help today?</h1>
@@ -168,7 +175,81 @@
                 </div>
             </section>
 
-            <footer class="composer" id="composer">
+            <section class="dashboard-view" id="dashboardView" aria-live="polite">
+                <div class="dashboard-shell">
+                    <div class="dashboard-head">
+                        <div>
+                            <span class="hero-pill">Operations</span>
+                            <h1>Application dashboard</h1>
+                            <p class="dashboard-sub">Live view of agent traffic, estimated token usage, and API endpoint response times.</p>
+                        </div>
+                        <div class="dashboard-actions">
+                            <div class="mode-toggle" role="group" aria-label="Dashboard data mode">
+                                <button class="mode-btn active" id="dashModeDemo" data-mode="demo" type="button">Demo</button>
+                                <button class="mode-btn" id="dashModeLive" data-mode="live" type="button">Live</button>
+                            </div>
+                            <span class="dashboard-source" id="dashSource">Demo data</span>
+                            <span class="dashboard-updated" id="dashUpdated">Loading…</span>
+                            <button class="dashboard-refresh" id="dashRefresh" type="button">Refresh</button>
+                        </div>
+                    </div>
+
+                    <div class="stat-grid" id="dashStats"></div>
+
+                    <section class="dash-panel">
+                        <div class="dash-panel-head">
+                            <h2>Traffic trend</h2>
+                            <span id="dashTrendMeta">Last 60 minutes</span>
+                        </div>
+                        <div class="trend-chart" id="dashTrend"></div>
+                    </section>
+
+                    <div class="dashboard-grid">
+                        <section class="dash-panel">
+                            <div class="dash-panel-head">
+                                <h2>API endpoint response times</h2>
+                                <span id="dashEndpointCount"></span>
+                            </div>
+                            <div class="dash-table-wrap">
+                                <table class="dash-table">
+                                    <thead>
+                                        <tr>
+                                            <th>Endpoint</th>
+                                            <th>Requests</th>
+                                            <th>Avg</th>
+                                            <th>P95</th>
+                                            <th>Errors</th>
+                                            <th>Last</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="dashEndpoints"></tbody>
+                                </table>
+                            </div>
+                        </section>
+
+                        <section class="dash-panel">
+                            <div class="dash-panel-head">
+                                <h2>Recent agent invocations</h2>
+                                <span id="dashInvocationCount"></span>
+                            </div>
+                            <div class="dash-list" id="dashInvocations"></div>
+                        </section>
+                    </div>
+
+                    <section class="dash-panel">
+                        <div class="dash-panel-head">
+                            <h2>AWS service feed</h2>
+                            <span id="dashAwsStatus">Loading…</span>
+                        </div>
+                        <div class="aws-grid" id="dashAwsServices"></div>
+                        <p class="aws-message" id="dashAwsMessage" hidden></p>
+                    </section>
+
+                    <p class="dashboard-note">Demo mode uses synthetic data. Live mode combines in-process application metrics with AWS CloudWatch data. Metrics are kept in memory and reset when the runtime restarts. Token counts use Bedrock response usage metadata when available; otherwise they are estimated.</p>
+                </div>
+            </section>
+
+            <footer class="composer" id="composer" hidden>
                 <form id="chatForm" autocomplete="off">
                     <div class="composer-box">
                         <select id="tableSelect" class="table-select" aria-label="Incident data source table" title="Incident data source table (SNOW agent)"></select>

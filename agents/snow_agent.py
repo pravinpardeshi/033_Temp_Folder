@@ -10,6 +10,7 @@ import boto3
 import psycopg2
 from psycopg2 import sql
 
+import monitoring
 from .base import BaseAgent
 from .reranker import BedrockReranker, reciprocal_rank_fusion
 from config import settings
@@ -136,6 +137,14 @@ class SnowAgent(BaseAgent):
             body=body,
         )
         response_body = json.loads(response.get("body").read())
+        usage = response_body.get("usage") or {}
+        monitoring.record_token_usage(
+            model_id=settings.LLM_MODEL_ID,
+            input_tokens=usage.get("input_tokens", 0),
+            output_tokens=usage.get("output_tokens", 0),
+            agent_key="snow_agent",
+            operation="invoke_model",
+        )
         return response_body["content"][0]["text"]
 
     async def invoke(self, session_id: str, prompt: str, table_name: str | None = None,) -> str:
