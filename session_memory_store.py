@@ -118,21 +118,11 @@ def _env_int(name: str, default: int) -> int:
 class SessionMemoryConfig:
     region: str = field(default_factory=lambda: os.environ.get("AWS_REGION", "us-east-1"))
     memory_id: str = field(default_factory=lambda: os.environ.get("MEMORY_ID", ""))
-    sessions_table: str = field(
-        default_factory=lambda: os.environ.get("SESSIONS_TABLE", "ChatSessions")
-    )
-    memory_enabled: bool = field(
-        default_factory=lambda: _env_bool("MEMORY_ENABLED", True)
-    )
-    context_turns: int = field(
-        default_factory=lambda: _env_int("MEMORY_CONTEXT_TURNS", 10)
-    )
-    title_max_chars: int = field(
-        default_factory=lambda: _env_int("SESSION_TITLE_MAX_CHARS", 60)
-    )
-    rename_max_chars: int = field(
-        default_factory=lambda: _env_int("SESSION_TITLE_RENAME_MAX_CHARS", 100)
-    )
+    sessions_table: str = field(default_factory=lambda: os.environ.get("SESSIONS_TABLE", "ChatSessions"))
+    memory_enabled: bool = field(default_factory=lambda: _env_bool("MEMORY_ENABLED", True))
+    context_turns: int = field(default_factory=lambda: _env_int("MEMORY_CONTEXT_TURNS", 10))
+    title_max_chars: int = field(default_factory=lambda: _env_int("SESSION_TITLE_MAX_CHARS", 60))
+    rename_max_chars: int = field(default_factory=lambda: _env_int("SESSION_TITLE_RENAME_MAX_CHARS", 100))
 
 
 # ---------------------------------------------------------------------------
@@ -177,9 +167,7 @@ class SessionRepository:
         region: str,
         dynamodb_resource: Any = None,
     ):
-        resource = dynamodb_resource or boto3.resource(
-            "dynamodb", region_name=region
-        )
+        resource = dynamodb_resource or boto3.resource("dynamodb", region_name=region)
         self.table = resource.Table(table_name)
 
     @staticmethod
