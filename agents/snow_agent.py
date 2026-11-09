@@ -1,7 +1,15 @@
-"""ServiceNOW Q&A agent with its own RAG implementation.
+"""ServiceNOW Q&A agent built as a LangGraph pipeline.
 
-Answers questions about closed incidents stored in the pgvector table:
-embedding -> hybrid retrieval (vector + full-text) -> optional rerank -> LLM.
+Answers questions about closed incidents stored in the pgvector table.
+
+Graph pipeline:
+
+    START -> embed_query -> retrieve -> rerank -> [conditional]
+        |                                    |-- documents found -> generate_answer -> END
+        |                                    |-- no documents    -> no_context_reply -> END
+
+State flows through a TypedDict (``SnowState``); each node is a sync
+function that LangGraph runs in a thread during ``ainvoke``.
 """
 
 import json
@@ -9,6 +17,8 @@ import json
 import boto3
 import psycopg2
 from psycopg2 import sql
+from langgraph.graph import END, START, StateGraph
+from typing import TypedDict
 
 import monitoring
 from .base import BaseAgent
@@ -22,8 +32,20 @@ QA_SYSTEM_PROMPT = (
 )
 
 
+class SnowState(TypedDict):
+    """Shared state for the snow_agent LangGraph pipeline."""
+
+    prompt: str
+    table_name: str
+    query_vector: list
+    candidates: list
+    documents: list
+    context: str
+    answer: str
+
+
 class SnowAgent(BaseAgent):
-    """Question/answer agent over closed ServiceNOW incidents."""
+    """Question/answer agent over closed ServiceNOW incidents (LangGraph)."""
 
     def __init__(self):
         self.table_name = settings.RDS_TABLE_NAME
@@ -39,6 +61,94 @@ class SnowAgent(BaseAgent):
             "rds",
             region_name=settings.AWS_REGION,
         )
+        self.graph = self._build_graph()
+
+    # ------------------------------------------------------------------
+    # Graph construction
+    # ------------------------------------------------------------------
+
+    def _build_graph(self):
+        """Compile the embed -> retrieve -> rerank -> answer pipeline."""
+        builder = StateGraph(SnowState)
+
+        builder.add_node("embed_query", self._node_embed_query)
+        builder.add_node("retrieve", self._node_retrieve)
+        builder.add_node("rerank", self._node_rerank)
+        builder.add_node("generate_answer", self._node_generate_answer)
+        builder.add_node("no_context_reply", self._node_no_context_reply)
+
+        builder.add_edge(START, "embed_query")
+        builder.add_edge("embed_query", "retrieve")
+        builder.add_edge("retrieve", "rerank")
+
+        builder.add_conditional_edges(
+            "rerank",
+            self._route_after_rerank,
+            {"generate": "generate_answer", "no_context": "no_context_reply"},
+        )
+
+        builder.add_edge("generate_answer", END)
+        builder.add_edge("no_context_reply", END)
+
+        return builder.compile()
+
+    def _route_after_rerank(self, state: SnowState) -> str:
+        """Send the flow to the LLM only when retrieval found documents."""
+        if state.get("documents"):
+            return "generate"
+        return "no_context"
+
+    # ------------------------------------------------------------------
+    # Graph nodes
+    # ------------------------------------------------------------------
+
+    def _node_embed_query(self, state: SnowState) -> dict:
+        """Embed the user prompt with the configured Bedrock model."""
+        return {"query_vector": self._get_embedding(state["prompt"])}
+
+    def _node_retrieve(self, state: SnowState) -> dict:
+        """Hybrid retrieval: vector + keyword candidates fused with RRF."""
+        candidates = self._retrieve_candidates(
+            state["prompt"],
+            state["query_vector"],
+            state["table_name"],
+        )
+        return {"candidates": candidates}
+
+    def _node_rerank(self, state: SnowState) -> dict:
+        """Rerank fused candidates down to top_k and build the LLM context."""
+        documents = self.reranker.rerank(
+            state["prompt"],
+            state.get("candidates") or [],
+            self.top_k,
+        )
+        return {
+            "documents": documents,
+            "context": "\n\n---\n\n".join(documents),
+        }
+
+    def _node_generate_answer(self, state: SnowState) -> dict:
+        """Generate the final answer from the retrieved context."""
+        return {
+            "answer": self._generate_answer(
+                state["prompt"],
+                state.get("context") or "",
+            )
+        }
+
+    def _node_no_context_reply(self, state: SnowState) -> dict:
+        """Deterministic reply when retrieval found nothing (no LLM call)."""
+        return {
+            "answer": (
+                "I could not find any relevant closed incidents in the "
+                f"vector store to answer: {state['prompt']}. Try rephrasing "
+                "the question or selecting a different incident table."
+            )
+        }
+
+    # ------------------------------------------------------------------
+    # Helpers used by nodes
+    # ------------------------------------------------------------------
 
     def _get_iam_token(self) -> str:
         """Generate a short-lived IAM authentication token for RDS."""
@@ -82,8 +192,8 @@ class SnowAgent(BaseAgent):
             cur.execute(query, (query_text, query_text, limit))
             return [str(row[0]) for row in cur.fetchall()]
 
-    def _retrieve(self, prompt: str, query_vector: list, table_name: str) -> list:
-        """Hybrid retrieval: vector + keyword, fused, then reranked."""
+    def _retrieve_candidates(self, prompt: str, query_vector: list, table_name: str) -> list:
+        """Hybrid retrieval: vector + keyword, fused with reciprocal rank fusion."""
         candidate_k = settings.HYBRID_CANDIDATE_K
         vector_docs = []
         keyword_docs = []
@@ -109,11 +219,8 @@ class SnowAgent(BaseAgent):
             conn.close()
 
         if keyword_docs:
-            candidates = reciprocal_rank_fusion([vector_docs, keyword_docs], k=settings.RRF_K)
-        else:
-            candidates = vector_docs
-
-        return self.reranker.rerank(prompt, candidates, self.top_k)
+            return reciprocal_rank_fusion([vector_docs, keyword_docs], k=settings.RRF_K)
+        return vector_docs
 
     def _build_prompt(self, prompt: str, context: str) -> str:
         return (
@@ -147,6 +254,10 @@ class SnowAgent(BaseAgent):
         )
         return response_body["content"][0]["text"]
 
+    # ------------------------------------------------------------------
+    # Public interface (BaseAgent)
+    # ------------------------------------------------------------------
+
     async def invoke(self, session_id: str, prompt: str, table_name: str | None = None,) -> str:
         if table_name and table_name not in settings.snow_tables:
             return (
@@ -155,10 +266,17 @@ class SnowAgent(BaseAgent):
             )
 
         selected_table = table_name or self.table_name
+        initial_state: SnowState = {
+            "prompt": str(prompt),
+            "table_name": selected_table,
+            "query_vector": [],
+            "candidates": [],
+            "documents": [],
+            "context": "",
+            "answer": "",
+        }
         try:
-            query_vector = self._get_embedding(prompt)
-            documents = self._retrieve(prompt, query_vector, selected_table)
-            context = "\n\n---\n\n".join(documents)
-            return self._generate_answer(prompt, context)
+            final_state = await self.graph.ainvoke(initial_state)
+            return final_state["answer"]
         except Exception as e:
             return f"Error querying the incident vector store: {e}"

@@ -33,21 +33,36 @@ keyword hints and, if needed, a small Bedrock LLM classifier.
 
 ```
 034_temp/
-├── runtime_entrypoint.py     # AgentCore entry point (BedrockAgentCoreApp)
+├── runtime_entrypoint.py     # AgentCore entry point (BedrockAgentCoreApp), /chat + routes
 ├── main.py                   # Local launcher (same app)
 ├── config.py                 # All settings (reads .env)
 ├── orchestrator.py           # Agent registry + routing
-├── graph.py                  # LangGraph pipeline
-├── monitoring.py             # /health and /api/monitor/* endpoints
+├── graph.py                  # LangGraph routing pipeline (router → agent)
+├── monitoring.py             # /health, /api/monitor/* endpoints, metrics store
+├── demo_monitoring.py        # Synthetic dashboard payload (demo mode)
+├── live_monitoring.py        # In-process + CloudWatch + Dynatrace payload (live mode)
+├── dynatrace_connector.py    # Dynatrace API v2 client (KPIs for another application)
+├── session_memory_store.py   # Session metadata (DynamoDB) + AgentCore Memory transcript
+├── create_session_table.py   # One-time: create the ChatSessions DynamoDB table
+├── retrieve_agentcore_sessions.py  # Example: list sessions and fetch transcripts
+├── create_session_in_agentCore.py  # Example: create a session and invoke the runtime
+├── lambda_function.py        # API Gateway → AgentCore proxy
 ├── agents/
 │   ├── base.py               # BaseAgent interface
 │   ├── reranker.py           # RRF fusion + Bedrock Rerank (shared utility)
 │   ├── chat_agent.py         # Legacy general chat agent (not registered)
-│   ├── snow_agent.py         # QA agent (self-contained RAG implementation)
+│   ├── snow_agent.py         # QA agent — LangGraph embed → retrieve → rerank → answer
+│   ├── snow_agent_0.1.py     # Legacy pre-LangGraph backup of the QA agent
 │   ├── rca_agent.py          # Root cause analysis (self-contained RAG implementation)
-│   └── change_qa_agent.py    # Change item quality assessment (form-driven)
-├── static/                   # Chat UI (HTML/CSS/JS)
-├── build_deploy_package.bat  # Builds dist\agentcore_deployment.zip
+│   ├── change_qa_agent.py    # Change item quality assessment (form-driven)
+│   └── monitoring_agent.py   # Health, token usage, and endpoint metrics answers
+├── static/                   # Chat UI + Dashboard (HTML/CSS/JS)
+├── SESSION_MEMORY_GUIDE.md   # Session storage design, schema, and usage guide
+├── AGENTCORE_MEMORY.md       # AgentCore Memory setup (resource, IAM, events)
+├── Dynatrace_Observability.md# Dynatrace KPI definitions and alerting strategy
+├── AD_SSO_Memory_Implementation_Plan.md  # AD SSO + Memory coding plan
+├── build_deploy_package.bat  # Builds dist\agentcore_deployment.zip (Windows)
+├── build_deploy_package.sh   # Same packaging for Linux/macOS
 ├── agentcore.json            # Runtime metadata
 ├── requirements.txt
 └── pyproject.toml
@@ -81,6 +96,12 @@ Health check: `curl http://localhost:8080/ping`
 | `MONITOR_API_GATEWAY_API_NAME` | REST API name used when `MONITOR_API_GATEWAY_TYPE=rest`. |
 | `MONITOR_API_GATEWAY_STAGE` | API Gateway stage name; HTTP APIs commonly use `$default`. |
 | `MONITOR_BEDROCK_MODEL_ID` | Bedrock model or inference-profile ID for invocation and token metrics. |
+| `DYNATRACE_ENABLED` | Enable the Dynatrace observability feed (default true). |
+| `DYNATRACE_URL` | Dynatrace environment URL, e.g. `https://abc12345.live.dynatrace.com`. |
+| `DYNATRACE_API_TOKEN` | Dynatrace API token (`metrics.read`, `entities.read`, `services.read`). |
+| `DYNATRACE_APP_ID` | Dynatrace entity ID of the application to monitor (`APPLICATION-…`). |
+| `DYNATRACE_APP_NAME` | Display name on the dashboard (falls back to the entity ID). |
+| `DYNATRACE_CACHE_SECONDS` | Cache duration for Dynatrace metrics (default 60). |
 | `LLM_MODEL_ID` | Bedrock model used for answers (e.g. Claude). |
 | `LLM_MAX_TOKENS` | Max output tokens for the QA agent. |
 | `LLM_TEMPERATURE` | Sampling temperature for RAG answers (default 0.2). |
@@ -104,6 +125,10 @@ Health check: `curl http://localhost:8080/ping`
 | `ROUTER_MAX_TOKENS`, `ROUTER_TEMPERATURE` | Output limit and temperature for the intent classifier. |
 | `CHANGE_TABLE_NAME` | Optional pgvector table with change records; enables lookup by change number. |
 | `CHANGE_QUALITY_MAX_TOKENS`, `CHANGE_QUALITY_TEMPERATURE` | Output limit and temperature for change assessments. |
+| `SESSIONS_TABLE` | DynamoDB table for chat session metadata (default `ChatSessions`). |
+| `MEMORY_ID` | AgentCore Memory resource ID used for chat transcripts. |
+| `MEMORY_ENABLED` | Persist transcripts to AgentCore Memory (default true). |
+| `SESSION_TTL_DAYS` | Auto-expire session metadata after N days; `0` disables (default 30). |
 | `APP_PORT`, `APP_HOST` | Local server binding (default 8080 / 0.0.0.0). |
 
 ## Using the agents
@@ -138,7 +163,9 @@ curl -X POST http://localhost:8080/invocations -H "Content-Type: application/jso
   -d '{"prompt":"Why did the database fail over?","agent":"rca_agent"}'
 ```
 
-Reuse a conversation by passing the same `session_id`.
+Reuse a conversation by passing the same `session_id` (see
+[Chat sessions and history](#chat-sessions-and-history) for how session IDs
+are resolved and stored).
 
 ---
 
@@ -146,8 +173,18 @@ Reuse a conversation by passing the same `session_id`.
 
 The UI in `static/` is a single-page app served by the runtime:
 
-- **Agent switcher** — Chat, SNOW, and RCA, with per-agent suggestions.
-  Every request sends the selected agent key explicitly.
+- **Agent switcher** — Chat, SNOW, RCA, and Monitoring, with per-agent
+  suggestions. Every request sends the selected agent key explicitly.
+- **Dashboard** — the landing page (auto-selected on first load) with
+  stat cards, endpoint/invocation tables, an AWS service feed, and the
+  Dynatrace pane. A **Demo / Live** toggle persists in `localStorage`
+  and refreshes every 10 seconds while the view is open.
+- **Tools → Observability** — a dedicated view of the Dynatrace
+  golden-signal KPIs (availability, throughput, response time, error rate)
+  for the monitored application. It fetches
+  `GET /api/monitor/dynatrace?mode=…` directly, has its own **Demo / Live**
+  toggle (kept in sync with the Dashboard's setting), and auto-refreshes
+  every 10 seconds while open.
 - **Data source dropdown** — when the SNOW agent is active, a table selector
   lists the pgvector tables from `SNOW_TABLE_OPTIONS` (default
   `snow_embeddings_table`, plus `XYZ123`). The choice is persisted per
@@ -157,7 +194,8 @@ The UI in `static/` is a single-page app served by the runtime:
   `localStorage` and defaults to the OS preference.
 - **Conversation history** stored in `localStorage` with per-conversation
   delete and "clear all". The backend `session_id` is preserved per
-  conversation.
+  conversation and persisted server-side (see
+  [Chat sessions and history](#chat-sessions-and-history)).
 - **Markdown rendering** for assistant answers (headings, lists, bold,
   inline code, fenced code blocks) and a copy button per answer.
 - **Typing indicator**, runtime status (`/ping`), responsive sidebar for
@@ -166,6 +204,92 @@ The UI in `static/` is a single-page app served by the runtime:
 The browser only calls the single `POST /chat` route (or its API Gateway
 equivalent). Change QA uses the same route with `agent: "change"`. No AWS
 credentials are exposed to the browser.
+
+---
+
+## Chat sessions and history
+
+Chat history is persisted server-side in two stores with distinct roles:
+
+| Store | Holds | Key |
+| --- | --- | --- |
+| **AgentCore Memory** | The full message transcript (assistant/user turns) | `actor_id` + `session_id` |
+| **DynamoDB `ChatSessions`** | Session metadata: title, timestamps, user mapping | `PK = USER#<actor_id>`, `SK = SESSION#<session_id>` |
+
+DynamoDB is the index — AgentCore has no "list sessions for user" API, so the
+metadata table answers "which sessions does this user have and which is the
+newest", while AgentCore Memory answers "what was said". Session IDs are
+generated by the application (UUID) at creation time.
+
+Full details: [`SESSION_MEMORY_GUIDE.md`](SESSION_MEMORY_GUIDE.md) (schema,
+usage, request flow) and [`AGENTCORE_MEMORY.md`](AGENTCORE_MEMORY.md)
+(resource + IAM setup).
+
+### Session resolution in `POST /chat`
+
+The handler in `runtime_entrypoint.py` resolves the session before running
+the agent, in this order:
+
+1. **Requested session exists** — if the request carries `session_id` and it
+   exists (DynamoDB metadata present), reuse it.
+2. **Otherwise, the user's latest session** — look up the most recent session
+   for `actor_id` in DynamoDB and reuse that.
+3. **Otherwise, a new session** — use the request's `session_id` as the new
+   session (generating a UUID only if the request omitted one).
+
+Whatever is resolved is returned in the response as `session_id` and reused on
+every subsequent turn of that conversation.
+
+Failures are never fatal: if session lookup fails, the handler falls back to
+the request's `session_id` (or a fresh UUID) and proceeds; if `save_turn`
+fails, the error is logged and the chat response is still returned. Session
+storage cannot break an answer.
+
+### Saving a turn
+
+After each answer the handler calls `SessionMemoryService.save_turn`, which:
+
+- appends the user message and assistant answer to the **AgentCore Memory**
+  transcript for `actor_id`/`session_id`, and
+- upserts **DynamoDB metadata** (creating the row on first turn, touching
+  `updated_at` and the TTL thereafter).
+
+### Create the metadata table (one-time)
+
+```bash
+python create_session_table.py
+```
+
+The script is idempotent: it creates `ChatSessions` with the PK/SK schema and
+on-demand billing, warns if a table exists with the wrong schema, and does
+nothing if the table is already correct. The AWS CLI equivalent:
+
+```bash
+aws dynamodb create-table \
+  --table-name ChatSessions \
+  --attribute-definitions AttributeName=PK,AttributeType=S AttributeName=SK,AttributeType=S \
+  --key-schema AttributeName=PK,KeyType=HASH AttributeName=SK,KeyType=RANGE \
+  --billing-mode PAY_PER_REQUEST
+```
+
+### Retention
+
+`SESSION_TTL_DAYS` (default 30) writes a DynamoDB `ttl` attribute (epoch
+seconds) on session creation and refreshes it on every turn — active chats
+never expire; abandoned ones are cleaned up automatically. Set `SESSION_TTL_DAYS=0`
+to disable expiry.
+
+### Example scripts
+
+| Script | Purpose |
+| --- | --- |
+| `create_session_in_agentCore.py` | Create a session, link it to a user, invoke the runtime. |
+| `retrieve_agentcore_sessions.py` | List a user's sessions from DynamoDB, then fetch transcripts from AgentCore Memory (the two-step fetch). |
+
+```bash
+curl -X POST http://localhost:8080/chat -H "Content-Type: application/json" \
+  -d '{"message":"What is VPN error 809?","session_id":"<optional-uuid>"}'
+```
 
 ---
 
@@ -208,9 +332,9 @@ lists the fields needed for a complete review.
 
 ## Retrieval: hybrid search and reranking
 
-Both `snow_agent` and `rca_agent` implement the same retrieval pipeline
-independently in `agents/snow_agent.py` and `agents/rca_agent.py`. The shared pieces are
-utilities, not agents:
+Both `snow_agent` and `rca_agent` retrieve context from the same pgvector
+store using the shared utilities in `agents/reranker.py` (not as agents). The
+shared pieces are:
 
 1. **Vector search** — pgvector cosine distance (`<=>`) over the incident
    embeddings, top `HYBRID_CANDIDATE_K`.
@@ -227,6 +351,32 @@ utilities, not agents:
 Reranking is deliberately **not** an agent: it does not converse, route, or
 produce answers, so adding it to the agent registry would complicate routing
 without benefit. It is a retrieval step shared by all RAG agents.
+
+### SNOW agent pipeline (LangGraph)
+
+`agents/snow_agent.py` runs its retrieval as an explicit **LangGraph**
+`StateGraph` (`self.graph`, compiled in `__init__`); `rca_agent` keeps the
+same steps as a linear method:
+
+```
+START → embed_query → retrieve → rerank ─┬→ generate_answer → END   (documents found)
+                                         └→ no_context_reply → END  (nothing found)
+```
+
+- **State** — `SnowState` (`TypedDict`): `prompt`, `table_name`,
+  `query_vector`, `candidates`, `documents`, `context`, `answer`.
+- **Nodes** — `embed_query`, `retrieve`, `rerank`, `generate_answer`,
+  `no_context_reply` are synchronous nodes; LangGraph runs them in a worker
+  thread during `ainvoke`.
+- **Conditional edge** — `_route_after_rerank` sends the run to the
+  deterministic `no_context_reply` (skips the LLM entirely) when reranking
+  returns no documents, otherwise to `generate_answer`.
+- **Public contract unchanged** — `invoke()` still accepts the `BaseAgent`
+  arguments and returns the answer string; `generate_answer` records exact
+  Bedrock `usage` tokens for the dashboard.
+- **Errors** propagate to `invoke()` and return
+  `Error querying the incident vector store: …`.
+
 
 For scale, add a GIN index for keyword search:
 
@@ -258,6 +408,12 @@ USING gin (to_tsvector('english', content));
    - `bedrock:Rerank` (optional reranking)
    - `rds-db:connect` on `arn:aws:rds-db:<region>:<acct>:dbuser:<resource-id>/<db-user>`
    - `s3:GetObject` for the deployment ZIP
+   - DynamoDB read/write on the `ChatSessions` table
+     (`GetItem`, `PutItem`, `Query`, `UpdateItem`, `DeleteItem`) for session
+     metadata
+   - `bedrock-agentcore` memory data-plane actions scoped to the memory ARN
+     (`CreateEvent`, `ListEvents`, `RetrieveMemoryRecords`, …) — full policy
+     in [`AGENTCORE_MEMORY.md`](AGENTCORE_MEMORY.md#4-iam-permissions)
 7. Attach the Runtime to the **VPC** with the RDS security group reachable
    (RDS is private). Allow the Runtime security group on port 5432 and enable
    IAM database authentication on the RDS instance.
@@ -524,6 +680,7 @@ description, then confirm the response and the invocation log show the new key.
 | `GET /api/monitor/metrics` | Requests, tokens, latency, error rate, uptime, and per-endpoint response times. |
 | `GET /api/monitor/endpoints` | Per-endpoint request counts, average/P95 latency, and errors. |
 | `GET /api/monitor/invocations?limit=50` | Recent invocation log. |
+| `GET /api/monitor/dynatrace?mode=demo\|live` | Dynatrace KPI feed for the monitored (other) application; `mode=demo` returns synthetic data, default is live. |
 | `GET /api/tables` | Tables available to the SNOW agent and the default table. |
 
 The UI dashboard defaults to **Demo** mode and can be switched to **Live** with
@@ -637,6 +794,40 @@ Details and limitations:
 - If a response does not include usage metadata, the application falls back to
   an estimate based on request/response length; the card label and recent
   invocation rows indicate whether usage is exact or estimated.
+
+### Monitoring another application with Dynatrace
+
+The Dynatrace feed appears in two places: the **"Another application ·
+Dynatrace"** pane at the bottom of the Dashboard, and its own **Tools →
+Observability** view in the sidebar (full-page KPI display). Both fetch
+golden-signal KPIs and extended metrics for a different application from the
+Dynatrace API v2 (see `Dynatrace_Observability.md` for the KPI definitions).
+Configure it in `.env`:
+
+```bash
+DYNATRACE_ENABLED=true
+DYNATRACE_URL=https://abc12345.live.dynatrace.com
+DYNATRACE_API_TOKEN=dt0c01.XXXX   # scopes: metrics.read, entities.read, services.read
+DYNATRACE_APP_ID=APPLICATION-1234567890
+DYNATRACE_APP_NAME=checkout-web
+DYNATRACE_CACHE_SECONDS=60
+```
+
+Behavior:
+
+- **Demo mode** shows synthetic Dynatrace metrics (no API calls).
+- **Live mode** queries `GET /api/v2/metrics/query` once per cache window,
+  scoped with `entitySelector=entityId("…")`, and reads availability,
+  throughput, response time, and errors.
+- The feed always renders: unconfigured, disabled, and API-failure states
+  appear as a status pill with an explanatory message instead of breaking the
+  dashboard. Failures are negative-cached for up to 30 seconds.
+- `GET /api/monitor/dynatrace?mode=demo|live` returns the feed directly
+  (`mode` defaults to `live`; both UI surfaces pass the shared Demo/Live
+  setting). Useful for the monitoring agent or external checks.
+
+The KPI metric IDs live in `dynatrace_connector.py` (`_KPI_METRICS`); adjust
+them there if the monitored entity is a SERVICE rather than an APPLICATION.
 
 ---
 

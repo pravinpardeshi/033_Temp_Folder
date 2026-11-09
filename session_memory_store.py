@@ -24,11 +24,13 @@ default):
     MEMORY_CONTEXT_TURNS
     SESSION_TITLE_MAX_CHARS
     SESSION_TITLE_RENAME_MAX_CHARS
+    SESSION_TTL_DAYS
 """
 
 from __future__ import annotations
 
 import os
+import time
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -123,6 +125,7 @@ class SessionMemoryConfig:
     context_turns: int = field(default_factory=lambda: _env_int("MEMORY_CONTEXT_TURNS", 10))
     title_max_chars: int = field(default_factory=lambda: _env_int("SESSION_TITLE_MAX_CHARS", 60))
     rename_max_chars: int = field(default_factory=lambda: _env_int("SESSION_TITLE_RENAME_MAX_CHARS", 100))
+    session_ttl_days: int = field(default_factory=lambda: _env_int("SESSION_TTL_DAYS", 30))
 
 
 # ---------------------------------------------------------------------------
@@ -166,9 +169,17 @@ class SessionRepository:
         table_name: str,
         region: str,
         dynamodb_resource: Any = None,
+        ttl_days: int = 30,
     ):
         resource = dynamodb_resource or boto3.resource("dynamodb", region_name=region)
         self.table = resource.Table(table_name)
+        self.ttl_days = ttl_days
+
+    def _ttl_epoch(self) -> Optional[int]:
+        """Epoch seconds when the row should expire; None disables TTL."""
+        if self.ttl_days <= 0:
+            return None
+        return int(time.time()) + self.ttl_days * 86400
 
     @staticmethod
     def _keys(actor_id: str, session_id: str) -> Dict[str, str]:
@@ -207,6 +218,9 @@ class SessionRepository:
             "agent": agent,
             "message_count": 0,
         }
+        ttl = self._ttl_epoch()
+        if ttl is not None:
+            item["ttl"] = ttl
         self.table.put_item(
             Item=item,
             ConditionExpression="attribute_not_exists(SK)",
@@ -245,18 +259,24 @@ class SessionRepository:
         agent: str,
     ) -> SessionRecord:
         now = utcnow_iso()
+        update_expression = (
+            "SET updated_at = :now, last_message = :last, agent = :agent"
+        )
+        values: Dict[str, Any] = {
+            ":now": now,
+            ":last": normalize_text(last_message)[:500],
+            ":agent": agent,
+            ":one": 1,
+        }
+        ttl = self._ttl_epoch()
+        if ttl is not None:
+            update_expression += ", ttl = :ttl"
+            values[":ttl"] = ttl
+        update_expression += " ADD message_count :one"
         response = self.table.update_item(
             Key=self._keys(actor_id, session_id),
-            UpdateExpression=(
-                "SET updated_at = :now, last_message = :last, agent = :agent "
-                "ADD message_count :one"
-            ),
-            ExpressionAttributeValues={
-                ":now": now,
-                ":last": normalize_text(last_message)[:500],
-                ":agent": agent,
-                ":one": 1,
-            },
+            UpdateExpression=update_expression,
+            ExpressionAttributeValues=values,
             ConditionExpression="attribute_exists(SK)",
             ReturnValues="ALL_NEW",
         )
@@ -481,7 +501,9 @@ class SessionMemoryService:
     ):
         self.config = config or SessionMemoryConfig()
         self.repository = repository or SessionRepository(
-            self.config.sessions_table, self.config.region
+            self.config.sessions_table,
+            self.config.region,
+            ttl_days=self.config.session_ttl_days,
         )
         self.memory = memory or AgentCoreMemoryStore(
             self.config.memory_id,
@@ -571,6 +593,15 @@ class SessionMemoryService:
             **record.to_dict(),
             "messages": self.memory.list_messages(actor_id, session_id),
         }
+
+    def session_exists(self, actor_id: str, session_id: str) -> bool:
+        """Lightweight check: does this actor own the session metadata row?"""
+        return self.repository.get(actor_id, session_id) is not None
+
+    def get_latest_session_id(self, actor_id: str) -> Optional[str]:
+        """Most recently updated session id for this actor, or None."""
+        records = self.repository.list(actor_id)
+        return records[0].session_id if records else None
 
     def get_context(
         self,

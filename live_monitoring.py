@@ -13,6 +13,7 @@ from botocore.config import Config
 
 import monitoring
 from config import settings
+from dynatrace_connector import build_dynatrace_feed
 
 _CACHE = {"key": None, "expires_at": 0.0, "data": None}
 
@@ -318,4 +319,5 @@ def build_live_dashboard() -> dict:
         "invocations": invocations,
         "trend": _trend_points(),
         "aws": _cloudwatch_feed(),
+        "dynatrace": build_dynatrace_feed(),
     }

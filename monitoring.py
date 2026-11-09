@@ -340,6 +340,32 @@ async def get_endpoints(request: Request) -> JSONResponse:
     return JSONResponse({"endpoints": _endpoint_snapshot()})
 
 
+async def get_dynatrace(request: Request) -> JSONResponse:
+    """Dynatrace feed for the monitored (other) application (`?mode=demo|live`)."""
+    requested = (request.query_params.get("mode") or "").strip().lower()
+    default = (settings.MONITOR_DEFAULT_MODE or "demo").strip().lower()
+    mode = requested if requested in ("demo", "live") else default
+    try:
+        if mode == "demo":
+            from demo_monitoring import build_demo_dynatrace
+            return JSONResponse(build_demo_dynatrace())
+        from dynatrace_connector import build_dynatrace_feed
+        return JSONResponse(build_dynatrace_feed())
+    except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
+        return JSONResponse(
+            {
+                "enabled": True,
+                "configured": False,
+                "simulated": False,
+                "status": "unavailable",
+                "kpis": [],
+                "extended": [],
+                "message": f"Could not build Dynatrace feed: {exc}",
+            },
+            status_code=500,
+        )
+
+
 async def get_invocations(request: Request) -> JSONResponse:
     try:
         limit = int(request.query_params.get("limit", 10))

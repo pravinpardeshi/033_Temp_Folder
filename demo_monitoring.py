@@ -122,6 +122,33 @@ def _aws_services(total_requests, rng):
     ]
 
 
+def build_demo_dynatrace() -> dict:
+    rng = random.Random(int(time.time() // 15))
+    return {
+        "enabled": True,
+        "configured": True,
+        "simulated": True,
+        "app_name": "checkout-web (demo)",
+        "url": "https://demo.live.dynatrace.com",
+        "status": "healthy" if rng.random() > 0.2 else "degraded",
+        "kpis": [
+            {"label": "Availability", "value": round(99.92 + rng.uniform(0, 0.07), 2), "unit": "%"},
+            {"label": "Throughput", "value": rng.randint(380, 640), "unit": "Count"},
+            {"label": "Response time", "value": round(rng.uniform(180, 430), 1), "unit": "ms"},
+            {"label": "Error rate", "value": round(rng.uniform(0.2, 1.5), 2), "unit": "%"},
+        ],
+        "extended": [
+            {"label": "P95 response time", "value": round(rng.uniform(540, 1250), 1), "unit": "ms", "key": "p95_latency"},
+            {"label": "Apdex", "value": round(rng.uniform(0.9, 0.99), 3), "unit": "score", "key": "apdex"},
+            {"label": "Active sessions", "value": rng.randint(40, 95), "unit": "Count", "key": "sessions"},
+            {"label": "Active users", "value": rng.randint(25, 70), "unit": "Count", "key": "users"},
+            {"label": "Largest Contentful Paint", "value": round(rng.uniform(1400, 2600), 1), "unit": "ms", "key": "lcp"},
+            {"label": "Actions with JS errors", "value": round(rng.uniform(0.1, 1.4), 2), "unit": "%", "key": "js_error_actions"},
+        ],
+        "message": "Demo mode uses synthetic Dynatrace metrics for another application.",
+    }
+
+
 def build_demo_dashboard() -> dict:
     now = datetime.now(timezone.utc)
     rng = random.Random(int(time.time() // 15))
@@ -178,4 +205,5 @@ def build_demo_dashboard() -> dict:
             "message": "Demo mode uses synthetic application and CloudWatch metrics.",
             "services": _aws_services(total_requests, rng),
         },
+        "dynatrace": build_demo_dynatrace(),
     }

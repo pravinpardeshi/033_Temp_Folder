@@ -30,6 +30,18 @@ class Settings(BaseSettings):
     MONITOR_API_GATEWAY_STAGE: str = ""
     MONITOR_BEDROCK_MODEL_ID: str = ""
 
+    # Dynatrace observability (monitor a different application)
+    DYNATRACE_ENABLED: bool = True
+    # Environment URL, e.g. https://abc12345.live.dynatrace.com
+    DYNATRACE_URL: str = ""
+    # API token with scopes: metrics.read, entities.read, services.read
+    DYNATRACE_API_TOKEN: str = ""
+    # Dynatrace entity id of the application to monitor, e.g. APPLICATION-1234567890
+    DYNATRACE_APP_ID: str = ""
+    # Display name shown on the dashboard
+    DYNATRACE_APP_NAME: str = ""
+    DYNATRACE_CACHE_SECONDS: int = 60
+
     # Model Configurations
     LLM_MODEL_ID: str = "anthropic.claude-3-5-sonnet-20240620-v1:0"
     LLM_MAX_TOKENS: int = 1024

@@ -105,11 +105,23 @@
         dashSource: $("#dashSource"),
         dashModeDemo: $("#dashModeDemo"),
         dashModeLive: $("#dashModeLive"),
+        obsModeDemo: $("#obsModeDemo"),
+        obsModeLive: $("#obsModeLive"),
         dashTrend: $("#dashTrend"),
         dashTrendMeta: $("#dashTrendMeta"),
         dashAwsServices: $("#dashAwsServices"),
         dashAwsStatus: $("#dashAwsStatus"),
         dashAwsMessage: $("#dashAwsMessage"),
+        dashDynatraceStatus: $("#dashDynatraceStatus"),
+        dashDynatraceKpis: $("#dashDynatraceKpis"),
+        dashDynatraceMessage: $("#dashDynatraceMessage"),
+        observeView: $("#observeView"),
+        obsStatus: $("#obsStatus"),
+        obsKpis: $("#obsKpis"),
+        obsMessage: $("#obsMessage"),
+        obsSource: $("#obsSource"),
+        obsUpdated: $("#obsUpdated"),
+        obsRefresh: $("#obsRefresh"),
     };
 
     const messagesEl = document.createElement("div");
@@ -128,6 +140,9 @@
         dashboardPending: false,
         dashboardTimer: null,
         dashboardMode: safeGet(MONITOR_MODE_KEY) === "live" ? "live" : "demo",
+        observeTimer: null,
+        observeLoading: false,
+        observePending: false,
         tables: FALLBACK_TABLES.slice(),
         defaultTable: FALLBACK_TABLES[0],
         table: safeGet(TABLE_KEY) || FALLBACK_TABLES[0],
@@ -259,15 +274,17 @@
     /* ---------------- views ---------------- */
 
     function setView(view) {
-        state.view = view === "change" || view === "monitor" ? view : "chat";
+        state.view = view === "change" || view === "monitor" || view === "observe" ? view : "chat";
         const isChat = state.view === "chat";
         const isChange = state.view === "change";
         const isMonitor = state.view === "monitor";
+        const isObserve = state.view === "observe";
 
         el.chat.hidden = !isChat;
         el.composer.hidden = !isChat;
         el.changeView.hidden = !isChange;
         el.dashboardView.hidden = !isMonitor;
+        el.observeView.hidden = !isObserve;
         el.topbarHint.hidden = !isChat;
 
         $$(".agent-item[data-agent]").forEach((btn) => {
@@ -280,8 +297,10 @@
             btn.classList.toggle("active", !isChat && btn.dataset.tool === state.view);
         });
 
+        stopDashboard();
+        stopObserve();
+
         if (isChange) {
-            stopDashboard();
             el.activeAgentName.textContent = "Change QA";
             el.activeAgentChip.textContent = "change";
             el.changeNumber.focus();
@@ -289,8 +308,11 @@
             el.activeAgentName.textContent = "Dashboard";
             el.activeAgentChip.textContent = "dashboard";
             startDashboard();
+        } else if (isObserve) {
+            el.activeAgentName.textContent = "Observability";
+            el.activeAgentChip.textContent = "observe";
+            startObserve();
         } else {
-            stopDashboard();
             const meta = AGENTS[state.agent];
             el.activeAgentName.textContent = meta.label;
             el.activeAgentChip.textContent = meta.label.toLowerCase();
@@ -913,6 +935,7 @@
         const value = Number(metric.value || 0);
         if (metric.unit === "ms") return formatMs(value);
         if (metric.unit === "%") return value.toFixed(2) + "%";
+        if (metric.unit === "score") return value.toFixed(2);
         return formatNumber(value);
     }
 
@@ -943,44 +966,198 @@
         const simulated = Boolean(feed.simulated);
         const configured = Boolean(feed.configured);
         const label = simulated ? "Simulated" : configured ? "CloudWatch" : "Not configured";
-        el.dashAwsStatus.textContent = feed.region ? label + " · " + feed.region : label;
+        if (el.dashAwsStatus) {
+            el.dashAwsStatus.textContent = feed.region ? label + " · " + feed.region : label;
+        }
 
         const services = feed.services || [];
         if (!services.length) {
-            el.dashAwsServices.innerHTML = '<div class="dash-empty">No AWS service metrics available.</div>';
+            if (el.dashAwsServices) {
+                el.dashAwsServices.innerHTML = '<div class="dash-empty">No AWS service metrics available.</div>';
+            }
         } else {
-            el.dashAwsServices.innerHTML = services.map((service) => {
-                const metrics = (service.metrics || []).map((metric) =>
-                    '<div class="aws-metric">' +
-                    '<span>' + escapeHtml(metric.label) + "</span>" +
-                    "<strong>" + escapeHtml(formatMetric(metric)) + "</strong>" +
-                    "</div>"
-                ).join("");
-                return '<div class="aws-card">' +
-                    '<div class="aws-card-head"><strong>' + escapeHtml(service.service) + "</strong>" +
-                    "<small>" + escapeHtml(service.resource || "") + "</small></div>" +
-                    '<div class="aws-metric-grid">' + metrics + "</div>" +
-                    "</div>";
-            }).join("");
+            if (el.dashAwsServices) {
+                el.dashAwsServices.innerHTML = services.map((service) => {
+                    const metrics = (service.metrics || []).map((metric) =>
+                        '<div class="aws-metric">' +
+                        '<span>' + escapeHtml(metric.label) + "</span>" +
+                        "<strong>" + escapeHtml(formatMetric(metric)) + "</strong>" +
+                        "</div>"
+                    ).join("");
+                    return '<div class="aws-card">' +
+                        '<div class="aws-card-head"><strong>' + escapeHtml(service.service) + "</strong>" +
+                        "<small>" + escapeHtml(service.resource || "") + "</small></div>" +
+                        '<div class="aws-metric-grid">' + metrics + "</div>" +
+                        "</div>";
+                }).join("");
+            }
         }
 
         if (feed.message) {
-            el.dashAwsMessage.hidden = false;
-            el.dashAwsMessage.textContent = feed.message;
+            if (el.dashAwsMessage) {
+                el.dashAwsMessage.hidden = false;
+                el.dashAwsMessage.textContent = feed.message;
+            }
         } else {
+            if (el.dashAwsMessage) {
+        if (el.dashAwsMessage) {
+        if (el.dashAwsMessage) {
             el.dashAwsMessage.hidden = true;
-            el.dashAwsMessage.textContent = "";
+        }
+        }
+                el.dashAwsMessage.textContent = "";
+            }
+        }
+    }
+
+    const DYNATRACE_STATUS_LABELS = {
+        healthy: "Healthy",
+        degraded: "Degraded",
+        unavailable: "Unavailable",
+        unconfigured: "Not configured",
+        disabled: "Disabled",
+    };
+
+    function renderDynatraceFeed(feed, parts) {
+        const data = feed || {};
+        const status = data.status || "unavailable";
+        const statusClass = status === "healthy" ? "good"
+            : status === "degraded" || status === "unavailable" ? "bad"
+            : "";
+        if (parts.status) {
+            parts.status.innerHTML =
+                '<span class="status-pill ' + statusClass + '">' +
+                escapeHtml(DYNATRACE_STATUS_LABELS[status] || status) + "</span>" +
+                (data.app_name ? " · " + escapeHtml(data.app_name) : "");
+        }
+
+
+        const kpis = data.kpis || [];
+        const extended = data.extended || [];
+        const cards = [];
+
+        if (kpis.length) {
+            const metrics = kpis.map((kpi) =>
+                '<div class="aws-metric">' +
+                "<span>" + escapeHtml(kpi.label) + "</span>" +
+                "<strong>" + escapeHtml(formatMetric(kpi)) + "</strong>" +
+                "</div>"
+            ).join("");
+            cards.push('<div class="aws-card">' +
+                '<div class="aws-card-head"><strong>' + escapeHtml(data.app_name || "Monitored application") + "</strong>" +
+                "<small>" + escapeHtml(data.url || "Dynatrace") + "</small></div>" +
+                '<div class="aws-metric-grid">' + metrics + "</div>" +
+                "</div>");
+        }
+
+        if (extended.length) {
+            const metrics = extended.map((kpi) =>
+                '<div class="aws-metric">' +
+                "<span>" + escapeHtml(kpi.label) + "</span>" +
+                "<strong>" + escapeHtml(formatMetric(kpi)) + "</strong>" +
+                "</div>"
+            ).join("");
+            cards.push('<div class="aws-card">' +
+                '<div class="aws-card-head"><strong>Extended metrics</strong>' +
+                "<small>" + escapeHtml(data.app_name || "Dynatrace") + " · last hour</small></div>" +
+                '<div class="aws-metric-grid">' + metrics + "</div>" +
+                "</div>");
+        }
+
+        if (parts.kpis) {
+            parts.kpis.innerHTML = cards.length
+                ? cards.join("")
+                : '<div class="dash-empty">No Dynatrace metrics available.</div>';
+        }
+
+        if (data.message && parts.message) {
+            parts.message.hidden = false;
+            parts.message.textContent = data.message;
+        } else if (parts.message) {
+            parts.message.hidden = true;
+            parts.message.textContent = "";
+        }
+    }
+
+    function renderDynatrace(feed) {
+        renderDynatraceFeed(feed, {
+            status: el.dashDynatraceStatus,
+            kpis: el.dashDynatraceKpis,
+            message: el.dashDynatraceMessage,
+        });
+    }
+
+    function renderObservability(feed) {
+        renderDynatraceFeed(feed, {
+            status: el.obsStatus,
+            kpis: el.obsKpis,
+            message: el.obsMessage,
+        });
+        el.obsUpdated.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+    }
+
+    function renderObservabilityError(message) {
+        el.obsStatus.textContent = "Unavailable";
+        el.obsKpis.innerHTML = '<div class="dash-error">' + escapeHtml(message || "Could not load Dynatrace metrics.") + "</div>";
+        el.obsMessage.hidden = true;
+        el.obsUpdated.textContent = "Update failed";
+    }
+
+    async function loadObservability() {
+        if (state.observeLoading) {
+            state.observePending = true;
+            return;
+        }
+        state.observeLoading = true;
+        state.observePending = false;
+        el.obsRefresh.disabled = true;
+        try {
+            const url = apiUrl("/api/monitor/dynatrace?mode=" + encodeURIComponent(state.dashboardMode) + "&_=" + Date.now());
+            const data = await fetchJSON(url, { cache: "no-store" });
+            if (data.error) throw new Error(data.error);
+            renderObservability(data);
+            updateRuntimeStatus("online");
+        } catch (error) {
+            renderObservabilityError(error.message || "Could not load Dynatrace metrics.");
+            updateRuntimeStatus("error");
+        } finally {
+            state.observeLoading = false;
+            el.obsRefresh.disabled = false;
+            if (state.observePending) {
+                state.observePending = false;
+                loadObservability();
+            }
+        }
+    }
+
+    function startObserve() {
+        stopObserve();
+        updateModeButtons();
+        loadObservability();
+        state.observeTimer = setInterval(loadObservability, 10000);
+    }
+
+    function stopObserve() {
+        if (state.observeTimer) {
+            clearInterval(state.observeTimer);
+            state.observeTimer = null;
         }
     }
 
     function updateModeButtons() {
         const live = state.dashboardMode === "live";
-        el.dashModeDemo.classList.toggle("active", !live);
-        el.dashModeLive.classList.toggle("active", live);
-        el.dashModeDemo.setAttribute("aria-pressed", String(!live));
-        el.dashModeLive.setAttribute("aria-pressed", String(live));
+        [el.dashModeDemo, el.obsModeDemo].forEach((btn) => {
+            btn.classList.toggle("active", !live);
+            btn.setAttribute("aria-pressed", String(!live));
+        });
+        [el.dashModeLive, el.obsModeLive].forEach((btn) => {
+            btn.classList.toggle("active", live);
+            btn.setAttribute("aria-pressed", String(live));
+        });
         el.dashSource.textContent = live ? "Live data" : "Demo data";
         el.dashSource.classList.toggle("live", live);
+        el.obsSource.textContent = live ? "Live data" : "Demo data";
+        el.obsSource.classList.toggle("live", live);
     }
 
     function renderDashboard(data) {
@@ -1043,6 +1220,7 @@
 
         renderTrend(data.trend || []);
         renderAws(data.aws || {});
+        renderDynatrace(data.dynatrace || {});
         updateModeButtons();
         el.dashUpdated.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     }
@@ -1055,8 +1233,14 @@
         el.dashEndpointCount.textContent = "";
         el.dashInvocationCount.textContent = "";
         el.dashTrend.innerHTML = "";
-        el.dashAwsServices.innerHTML = "";
-        el.dashAwsStatus.textContent = "Unavailable";
+        if (el.dashAwsServices) {
+            el.dashAwsServices.innerHTML = "";
+        }
+        if (el.dashAwsStatus) {
+            el.dashAwsStatus.textContent = "Unavailable";
+        }
+        el.dashDynatraceKpis.innerHTML = "";
+        el.dashDynatraceStatus.textContent = "Unavailable";
         el.dashAwsMessage.hidden = true;
     }
 
@@ -1092,6 +1276,7 @@
         safeSet(MONITOR_MODE_KEY, state.dashboardMode);
         updateModeButtons();
         if (state.view === "monitor") loadDashboard();
+        if (state.view === "observe") loadObservability();
     }
 
     function startDashboard() {
@@ -1109,8 +1294,11 @@
     }
 
     el.dashRefresh.addEventListener("click", loadDashboard);
+    el.obsRefresh.addEventListener("click", loadObservability);
     el.dashModeDemo.addEventListener("click", () => setDashboardMode("demo"));
     el.dashModeLive.addEventListener("click", () => setDashboardMode("live"));
+    el.obsModeDemo.addEventListener("click", () => setDashboardMode("demo"));
+    el.obsModeLive.addEventListener("click", () => setDashboardMode("live"));
 
     el.newChatBtn.addEventListener("click", () => {
         if (state.sending) return;

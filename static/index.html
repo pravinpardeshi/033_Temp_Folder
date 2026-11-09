@@ -87,6 +87,13 @@
                         <small>Health and performance</small>
                     </span>
                 </button>
+                <button class="agent-item" data-tool="observe" type="button" title="Observability — Dynatrace metrics for another application">
+                    <span class="agent-icon observe">O</span>
+                    <span class="agent-copy">
+                        <strong>Observability</strong>
+                        <small>Dynatrace metrics</small>
+                    </span>
+                </button>
             </div>
 
             <div class="section-label history-label">
@@ -227,25 +234,48 @@
                             </div>
                         </section>
 
-                        <section class="dash-panel">
-                            <div class="dash-panel-head">
-                                <h2>Recent agent invocations</h2>
-                                <span id="dashInvocationCount"></span>
+                    <section class="dash-panel">
+                        <div class="dash-panel-head">
+                            <h2>Recent agent invocations</h2>
+                            <span id="dashInvocationCount"></span>
+                        </div>
+                        <div class="dash-list" id="dashInvocations"></div>
+                    </section>
+                </div>
+
+                <p class="dashboard-note">Demo mode uses synthetic data. Live mode combines in-process application metrics with AWS CloudWatch data. Metrics are kept in memory and reset when the runtime restarts. Token counts use Bedrock response usage metadata when available; otherwise they are estimated.</p>
+                </div>
+            </section>
+
+            <section class="observe-view" id="observeView" hidden aria-live="polite">
+                <div class="dashboard-shell">
+                    <div class="dashboard-head">
+                        <div>
+                            <span class="hero-pill">Observability</span>
+                            <h1>Dynatrace metrics</h1>
+                            <p class="dashboard-sub">Golden-signal KPIs — availability, throughput, response time, and errors — for the monitored application.</p>
+                        </div>
+                        <div class="dashboard-actions">
+                            <div class="mode-toggle" role="group" aria-label="Observability data mode">
+                                <button class="mode-btn active" id="obsModeDemo" data-mode="demo" type="button">Demo</button>
+                                <button class="mode-btn" id="obsModeLive" data-mode="live" type="button">Live</button>
                             </div>
-                            <div class="dash-list" id="dashInvocations"></div>
-                        </section>
+                            <span class="dashboard-source" id="obsSource">Demo data</span>
+                            <span class="dashboard-updated" id="obsUpdated">Loading…</span>
+                            <button class="dashboard-refresh" id="obsRefresh" type="button">Refresh</button>
+                        </div>
                     </div>
 
                     <section class="dash-panel">
                         <div class="dash-panel-head">
-                            <h2>AWS service feed</h2>
-                            <span id="dashAwsStatus">Loading…</span>
+                            <h2>Application health</h2>
+                            <span id="obsStatus">Loading…</span>
                         </div>
-                        <div class="aws-grid" id="dashAwsServices"></div>
-                        <p class="aws-message" id="dashAwsMessage" hidden></p>
+                        <div class="aws-grid" id="obsKpis"></div>
+                        <p class="aws-message" id="obsMessage" hidden></p>
                     </section>
 
-                    <p class="dashboard-note">Demo mode uses synthetic data. Live mode combines in-process application metrics with AWS CloudWatch data. Metrics are kept in memory and reset when the runtime restarts. Token counts use Bedrock response usage metadata when available; otherwise they are estimated.</p>
+                    <p class="dashboard-note">Demo mode shows synthetic Dynatrace metrics. Live mode queries the Dynatrace API v2 for the application configured in <code>DYNATRACE_APP_ID</code>; results are cached for 60 seconds on the server and refresh every 10 seconds while this view is open.</p>
                 </div>
             </section>
 

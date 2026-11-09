@@ -10,12 +10,14 @@ from starlette.staticfiles import StaticFiles
 
 import monitoring
 from config import settings
+from session_memory_store import SessionMemoryService, new_session_id
 from orchestrator import orchestrator
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = BedrockAgentCoreApp()
+session_service = SessionMemoryService()
 app.add_middleware(monitoring.MonitoringMiddleware)
 
 
@@ -128,17 +130,48 @@ async def chat(request: Request) -> JSONResponse:
         return JSONResponse({"detail": "Invalid JSON body."}, status_code=400)
 
     message = payload.get("message") or payload.get("prompt") or ""
-    session_id = payload.get("session_id") or str(uuid.uuid4())
+    user_id = payload.get("user_id") or "default_user"
+    requested_session_id = str(payload.get("session_id") or "").strip() or None
     agent_key = payload.get("agent")
     table_name = payload.get("table_name") or payload.get("table")
 
     if not str(message).strip():
         return JSONResponse({"detail": "Missing 'message'."}, status_code=400)
 
+    # Resolve the session id:
+    # 1. Retrieve it from AgentCore if it exists (the requested session,
+    #    otherwise this user's most recently updated session).
+    # 2. Otherwise use the session_id provided by the incoming request as new
+    #    (generate one only when the request carries no id at all).
+    # Lookup failures must never break the chat: fall back to the request id.
+    session_id = None
+    try:
+        if requested_session_id and session_service.session_exists(user_id, requested_session_id):
+            session_id = requested_session_id
+        if session_id is None:
+            session_id = session_service.get_latest_session_id(user_id)
+    except Exception as exc:  # noqa: BLE001
+        print(f"session lookup failed: {exc}")
+    if session_id is None:
+        session_id = requested_session_id or new_session_id()
+
     try:
         response_text = await _run_agent(str(message), session_id, agent_key=agent_key, table_name=table_name)
     except Exception as e:
         return JSONResponse({"detail": str(e)}, status_code=500)
+
+    # Append this turn to the resolved session (AgentCore Memory transcript +
+    # DynamoDB metadata). Failures here must never break the chat response.
+    try:
+        session_service.save_turn(
+            actor_id=user_id,
+            session_id=session_id,
+            user_text=str(message),
+            assistant_text=response_text,
+            agent_key=agent_key or "snow_agent",
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(f"session persistence failed: {exc}")
 
     return JSONResponse({"response": response_text, "session_id": session_id})
 
@@ -155,6 +188,7 @@ app.router.routes.extend([
     Route("/api/monitor/metrics", monitoring.get_metrics, methods=["GET"]),
     Route("/api/monitor/endpoints", monitoring.get_endpoints, methods=["GET"]),
     Route("/api/monitor/invocations", monitoring.get_invocations, methods=["GET"]),
+    Route("/api/monitor/dynatrace", monitoring.get_dynatrace, methods=["GET"]),
     Route("/favicon.ico", monitoring.favicon, methods=["GET"]),
     Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"),
 ])
