@@ -330,24 +330,8 @@ async def get_endpoints(request: Request) -> JSONResponse:
     return JSONResponse({"endpoints": _endpoint_snapshot()})
 
 
-async def get_dynatrace(request: Request) -> JSONResponse:
-    """Dynatrace feed for the monitored (other) application."""
-    try:
-        from dynatrace_connector import build_dynatrace_feed
-        return JSONResponse(build_dynatrace_feed())
-    except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
-        return JSONResponse(
-            {
-                "enabled": True,
-                "configured": False,
-                "simulated": False,
-                "status": "unavailable",
-                "kpis": [],
-                "extended": [],
-                "message": f"Could not build Dynatrace feed: {exc}",
-            },
-            status_code=500,
-        )
+# Removed get_dynatrace endpoint
+
 
 
 async def get_invocations(request: Request) -> JSONResponse:

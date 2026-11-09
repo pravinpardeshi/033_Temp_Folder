@@ -105,16 +105,11 @@
         dashSource: $("#dashSource"),
         dashModeDemo: $("#dashModeDemo"),
         dashModeLive: $("#dashModeLive"),
-        obsModeDemo: $("#obsModeDemo"),
-        obsModeLive: $("#obsModeLive"),
         dashTrend: $("#dashTrend"),
         dashTrendMeta: $("#dashTrendMeta"),
         dashAwsServices: $("#dashAwsServices"),
         dashAwsStatus: $("#dashAwsStatus"),
         dashAwsMessage: $("#dashAwsMessage"),
-        dashDynatraceStatus: $("#dashDynatraceStatus"),
-        dashDynatraceKpis: $("#dashDynatraceKpis"),
-        dashDynatraceMessage: $("#dashDynatraceMessage"),
         observeView: $("#observeView"),
         obsStatus: $("#obsStatus"),
         obsKpis: $("#obsKpis"),
@@ -1221,7 +1216,6 @@
 
         renderTrend(data.trend || []);
         renderAws(data.aws || {});
-        renderDynatrace(data.dynatrace || {});
         updateModeButtons();
         el.dashUpdated.textContent = "Updated " + new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
     }

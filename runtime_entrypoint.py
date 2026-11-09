@@ -188,7 +188,6 @@ app.router.routes.extend([
     Route("/api/monitor/metrics", monitoring.get_metrics, methods=["GET"]),
     Route("/api/monitor/endpoints", monitoring.get_endpoints, methods=["GET"]),
     Route("/api/monitor/invocations", monitoring.get_invocations, methods=["GET"]),
-    Route("/api/monitor/dynatrace", monitoring.get_dynatrace, methods=["GET"]),
     Route("/favicon.ico", monitoring.favicon, methods=["GET"]),
     Mount("/static", app=StaticFiles(directory=STATIC_DIR), name="static"),
 ])
