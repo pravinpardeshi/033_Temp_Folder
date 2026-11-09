@@ -43,10 +43,10 @@
                 "What is the standard fix for disk space alerts?",
             ],
         },
-        rca: {
-            key: "rca",
-            label: "RCA",
-            letter: "R",
+        ci_qa: {
+            key: "ci_qa",
+            label: "CI QA",
+            letter: "Q",
             placeholder: "Describe the new incident to analyze…",
             samples: [
                 "New P1: checkout API returns 502 since 09:00 after a deploy.",
@@ -301,8 +301,8 @@
         stopObserve();
 
         if (isChange) {
-            el.activeAgentName.textContent = "Change QA";
-            el.activeAgentChip.textContent = "change";
+            el.activeAgentName.textContent = "CI QA";
+            el.activeAgentChip.textContent = "ci_qa";
             el.changeNumber.focus();
         } else if (isMonitor) {
             el.activeAgentName.textContent = "Dashboard";
@@ -1147,12 +1147,13 @@
     function updateModeButtons() {
         const live = state.dashboardMode === "live";
         [el.dashModeDemo, el.obsModeDemo].forEach((btn) => {
-            btn.classList.toggle("active", !live);
-            btn.setAttribute("aria-pressed", String(!live));
+            if (btn) btn.hidden = true;
         });
         [el.dashModeLive, el.obsModeLive].forEach((btn) => {
-            btn.classList.toggle("active", live);
-            btn.setAttribute("aria-pressed", String(live));
+            if (btn) {
+                btn.classList.toggle("active", live);
+                btn.setAttribute("aria-pressed", String(live));
+            }
         });
         el.dashSource.textContent = live ? "Live data" : "Demo data";
         el.dashSource.classList.toggle("live", live);

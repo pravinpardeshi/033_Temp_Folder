@@ -15,9 +15,8 @@ class Settings(BaseSettings):
     AWS_SESSION_TOKEN: str | None = None
 
     # Monitoring dashboard
-    # Default UI mode. Use "demo" for synthetic data or "live" for in-process
-    # metrics plus AWS CloudWatch data.
-    MONITOR_DEFAULT_MODE: str = "demo"
+    # Default UI mode.
+    MONITOR_DEFAULT_MODE: str = "live"
     MONITOR_AWS_ENABLED: bool = True
     MONITOR_LOOKBACK_MINUTES: int = 60
     MONITOR_AWS_CACHE_SECONDS: int = 60

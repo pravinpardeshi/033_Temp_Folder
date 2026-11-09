@@ -313,23 +313,13 @@ async def get_metrics(request: Request) -> JSONResponse:
 
 
 async def get_dashboard(request: Request) -> JSONResponse:
-    """Return demo or live dashboard data based on the requested mode."""
-    requested = (request.query_params.get("mode") or "").strip().lower()
-    default = (settings.MONITOR_DEFAULT_MODE or "demo").strip().lower()
-    mode = requested if requested in ("demo", "live") else default
-    if mode not in ("demo", "live"):
-        mode = "demo"
-
+    """Return live dashboard data."""
     try:
-        if mode == "demo":
-            from demo_monitoring import build_demo_dashboard
-            data = build_demo_dashboard()
-        else:
-            from live_monitoring import build_live_dashboard
-            data = build_live_dashboard()
+        from live_monitoring import build_live_dashboard
+        data = build_live_dashboard()
     except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
         return JSONResponse(
-            {"mode": mode, "error": f"Could not build {mode} dashboard: {exc}"},
+            {"mode": "live", "error": f"Could not build live dashboard: {exc}"},
             status_code=500,
         )
 
@@ -341,14 +331,8 @@ async def get_endpoints(request: Request) -> JSONResponse:
 
 
 async def get_dynatrace(request: Request) -> JSONResponse:
-    """Dynatrace feed for the monitored (other) application (`?mode=demo|live`)."""
-    requested = (request.query_params.get("mode") or "").strip().lower()
-    default = (settings.MONITOR_DEFAULT_MODE or "demo").strip().lower()
-    mode = requested if requested in ("demo", "live") else default
+    """Dynatrace feed for the monitored (other) application."""
     try:
-        if mode == "demo":
-            from demo_monitoring import build_demo_dynatrace
-            return JSONResponse(build_demo_dynatrace())
         from dynatrace_connector import build_dynatrace_feed
         return JSONResponse(build_dynatrace_feed())
     except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
