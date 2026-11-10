@@ -9,6 +9,15 @@
     const MAX_CONVERSATIONS = 30;
     const API_BASE = (window.AGENTCORE_API_BASE || "").replace(/\/+$/, "");
     const CHAT_PATH = "/chat";
+    const SESSIONS_PATH = "/api/sessions";
+    const USER_ID = window.AGENTCORE_USER_ID || "default_user";
+
+    const SERVER_AGENT_MAP = {
+        chat_agent: "snow",
+        snow_agent: "snow",
+        change_qa_agent: "snow",
+        monitoring_agent: "snow",
+    };
 
     function apiUrl(path) {
         return API_BASE + path;
@@ -21,37 +30,15 @@
     };
 
     const AGENTS = {
-        chat: {
-            key: "chat",
-            label: "Chat",
-            letter: "C",
-            placeholder: "Ask anything…",
-            samples: [
-                "Explain the difference between a P1 and P2 incident.",
-                "Draft a short status update for an ongoing outage.",
-                "What does HTTP 502 usually indicate?",
-            ],
-        },
         snow: {
             key: "snow",
-            label: "SNOW",
-            letter: "S",
+            label: "Chat",
+            letter: "C",
             placeholder: "Ask about closed incidents…",
             samples: [
                 "How was VPN error 809 resolved in past tickets?",
                 "Show resolutions for database failover incidents.",
                 "What is the standard fix for disk space alerts?",
-            ],
-        },
-        ci_qa: {
-            key: "ci_qa",
-            label: "CI QA",
-            letter: "Q",
-            placeholder: "Describe the new incident to analyze…",
-            samples: [
-                "New P1: checkout API returns 502 since 09:00 after a deploy.",
-                "Payment service latency spiked 10x; users report timeouts.",
-                "Nightly batch job fails with ORA-01555 after growing table scans.",
             ],
         },
     };
@@ -69,8 +56,10 @@
         newChatBtn: $("#newChatBtn"),
         agentList: $("#agentList"),
         agentGrid: $("#agentGrid"),
-        historyList: $("#historyList"),
-        clearHistoryBtn: $("#clearHistoryBtn"),
+        chatRail: $("#chatRail"),
+        railList: $("#railList"),
+        railNewChat: $("#railNewChat"),
+        railHint: $("#railHint"),
         themeToggle: $("#themeToggle"),
         themeLabel: $("#themeLabel"),
         themeIcon: $("#themeIcon"),
@@ -127,6 +116,11 @@
     const state = {
         agent: safeGet(AGENT_KEY) || "chat",
         conversations: loadConversations(),
+        sessions: [],
+        sessionsLoaded: false,
+        sessionsError: null,
+        userId: USER_ID,
+        pendingNewChat: false,
         activeId: safeGet(ACTIVE_KEY) || null,
         sending: false,
         changeSending: false,
@@ -134,7 +128,7 @@
         dashboardLoading: false,
         dashboardPending: false,
         dashboardTimer: null,
-        dashboardMode: safeGet(MONITOR_MODE_KEY) === "live" ? "live" : "demo",
+        dashboardMode: "live",
         observeTimer: null,
         observeLoading: false,
         observePending: false,
@@ -143,7 +137,7 @@
         table: safeGet(TABLE_KEY) || FALLBACK_TABLES[0],
     };
 
-    if (!AGENTS[state.agent]) state.agent = "chat";
+    if (!AGENTS[state.agent]) state.agent = "snow";
 
     /* ---------------- storage ---------------- */
 
@@ -277,6 +271,7 @@
 
         el.chat.hidden = !isChat;
         el.composer.hidden = !isChat;
+        el.chatRail.hidden = !isChat;
         el.changeView.hidden = !isChange;
         el.dashboardView.hidden = !isMonitor;
         el.observeView.hidden = !isObserve;
@@ -301,7 +296,7 @@
             el.changeNumber.focus();
         } else if (isMonitor) {
             el.activeAgentName.textContent = "Dashboard";
-            el.activeAgentChip.textContent = "dashboard";
+            el.activeAgentChip.textContent = "monitor";
             startDashboard();
         } else if (isObserve) {
             el.activeAgentName.textContent = "Observability";
@@ -310,7 +305,7 @@
         } else {
             const meta = AGENTS[state.agent];
             el.activeAgentName.textContent = meta.label;
-            el.activeAgentChip.textContent = meta.label.toLowerCase();
+            el.activeAgentChip.textContent = state.agent;
             syncTableVisibility();
         }
     }
@@ -372,57 +367,229 @@
         });
     });
 
-    /* ---------------- history ---------------- */
+    /* ---------------- history (server sessions) ---------------- */
+
+    function activeSessionId() {
+        const convo = activeConversation();
+        return convo ? (convo.sessionId || convo.id) : null;
+    }
+
+    function agentFromServer(key) {
+        if (!key) return state.agent;
+        if (AGENTS[key]) return key;
+        return SERVER_AGENT_MAP[key] || state.agent;
+    }
+
+    function sessionUrl(sessionId) {
+        return apiUrl(SESSIONS_PATH + "/" + encodeURIComponent(sessionId) + "?user_id=" + encodeURIComponent(state.userId));
+    }
+
+    async function loadSessions() {
+        try {
+            const data = await fetchJSON(apiUrl(SESSIONS_PATH + "?user_id=" + encodeURIComponent(state.userId)));
+            state.sessions = Array.isArray(data.sessions) ? data.sessions : [];
+            state.sessionsLoaded = true;
+            state.sessionsError = null;
+        } catch (error) {
+            state.sessionsLoaded = false;
+            state.sessionsError = error.message;
+        }
+        renderHistory();
+    }
+
+    function historyItem({ id, title, onOpen, onRename, onDelete, active }) {
+        const row = document.createElement("div");
+        row.className = "rail-item" + (active ? " active" : "");
+
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "rail-open";
+        open.title = title || "Chat";
+        const dot = document.createElement("span");
+        dot.className = "rail-dot";
+        const label = document.createElement("span");
+        label.className = "rail-label";
+        label.textContent = title || "Untitled";
+        open.appendChild(dot);
+        open.appendChild(label);
+        open.addEventListener("click", onOpen);
+
+        const actions = document.createElement("div");
+        actions.className = "rail-actions";
+
+        if (onRename) {
+            const renameBtn = document.createElement("button");
+            renameBtn.type = "button";
+            renameBtn.className = "rail-btn";
+            renameBtn.title = "Rename chat";
+            renameBtn.setAttribute("aria-label", "Rename chat");
+            renameBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M3 17.25V21h3.75L17.8 9.94l-3.75-3.75zM20.7 7.04a1 1 0 0 0 0-1.41l-2.34-2.34a1 1 0 0 0-1.41 0l-1.83 1.83 3.75 3.75z"/></svg>';
+            renameBtn.addEventListener("click", (event) => {
+                event.stopPropagation();
+                onRename();
+            });
+            actions.appendChild(renameBtn);
+        }
+
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "rail-btn danger";
+        delBtn.title = "Delete chat";
+        delBtn.setAttribute("aria-label", "Delete chat");
+        delBtn.innerHTML = '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4zm1 6h2v9h-2zm4 0h2v9h-2zM6 9h12l-1 12H7z"/></svg>';
+        delBtn.addEventListener("click", (event) => {
+            event.stopPropagation();
+            onDelete();
+        });
+        actions.appendChild(delBtn);
+
+        row.appendChild(open);
+        row.appendChild(actions);
+        return row;
+    }
 
     function renderHistory() {
-        el.historyList.innerHTML = "";
+        if (!el.railList) return;
+        el.railList.innerHTML = "";
+        el.railHint.hidden = true;
 
-        if (!state.conversations.length) {
-            const empty = document.createElement("div");
-            empty.className = "history-empty";
-            empty.textContent = "No conversations yet. Start a new chat.";
-            el.historyList.appendChild(empty);
+        const activeId = activeSessionId();
+
+        if (state.sessionsLoaded && state.sessions.length) {
+            state.sessions.forEach((session) => {
+                const id = session.session_id;
+                el.railList.appendChild(historyItem({
+                    id,
+                    title: session.title,
+                    active: id === activeId,
+                    onOpen: () => openSession(id),
+                    onRename: () => renameSession(id, session.title),
+                    onDelete: () => deleteSession(id),
+                }));
+            });
             return;
         }
 
-        state.conversations
-            .slice()
-            .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
-            .forEach((convo) => {
-                const row = document.createElement("div");
-                row.className = "history-item" + (convo.id === state.activeId ? " active" : "");
+        // Offline/local fallback so the browser still has usable history.
+        if (!state.sessionsLoaded) {
+            if (state.conversations.length) {
+                state.conversations
+                    .slice()
+                    .sort((a, b) => (b.updatedAt || 0) - (a.updatedAt || 0))
+                    .forEach((convo) => {
+                        el.railList.appendChild(historyItem({
+                            id: convo.id,
+                            title: convo.title,
+                            active: convo.id === state.activeId,
+                            onOpen: () => openConversation(convo.id),
+                            onRename: () => renameLocalConversation(convo.id),
+                            onDelete: () => deleteLocalConversation(convo.id),
+                        }));
+                    });
+            }
+            el.railHint.hidden = false;
+            el.railHint.textContent = state.sessionsError
+                ? "Session store unavailable — showing local history."
+                : "Loading chats…";
+            return;
+        }
 
-                const open = document.createElement("button");
-                open.type = "button";
-                open.className = "history-open";
-                open.title = convo.title || "Conversation";
-                open.innerHTML = '<span class="history-dot"></span>';
-                const title = document.createElement("span");
-                title.className = "history-title";
-                title.textContent = convo.title || "Untitled";
-                open.appendChild(title);
-                open.addEventListener("click", () => openConversation(convo.id));
+        const empty = document.createElement("div");
+        empty.className = "rail-empty";
+        empty.textContent = "No chats yet. Start a new one.";
+        el.railList.appendChild(empty);
+    }
 
-                const del = document.createElement("button");
-                del.type = "button";
-                del.className = "history-delete";
-                del.title = "Delete conversation";
-                del.setAttribute("aria-label", "Delete conversation");
-                del.innerHTML =
-                    '<svg viewBox="0 0 24 24" width="14" height="14"><path fill="currentColor" d="M9 3h6l1 2h4v2H4V5h4zm1 6h2v9h-2zm4 0h2v9h-2zM6 9h12l-1 12H7z"/></svg>';
-                del.addEventListener("click", (event) => {
-                    event.stopPropagation();
-                    deleteConversation(convo.id);
-                });
+    async function openSession(sessionId) {
+        if (state.sending) return;
+        state.pendingNewChat = false;
+        let convo = state.conversations.find((c) => c.id === sessionId || c.sessionId === sessionId);
 
-                row.appendChild(open);
-                row.appendChild(del);
-                el.historyList.appendChild(row);
+        if (!convo) {
+            try {
+                const data = await fetchJSON(sessionUrl(sessionId));
+                convo = {
+                    id: sessionId,
+                    title: data.title || "Untitled",
+                    agent: agentFromServer(data.agent),
+                    table: state.table,
+                    sessionId,
+                    messages: (data.messages || []).map((message) => ({
+                        role: message.role === "assistant" ? "assistant" : "user",
+                        content: message.content || "",
+                        agent: agentFromServer(message.agent || data.agent),
+                        ts: Date.parse(message.timestamp) || Date.now(),
+                    })),
+                    updatedAt: Date.now(),
+                };
+                state.conversations.unshift(convo);
+            } catch (error) {
+                el.railHint.hidden = false;
+                el.railHint.textContent = "Could not load chat: " + error.message;
+                return;
+            }
+        }
+
+        state.activeId = convo.id;
+        setAgent(convo.agent || state.agent);
+        if (convo.table && state.tables.includes(convo.table)) {
+            state.table = convo.table;
+            el.tableSelect.value = convo.table;
+        }
+        renderConversation();
+        renderHistory();
+        closeSidebar();
+        saveConversations();
+    }
+
+    async function renameSession(sessionId, currentTitle) {
+        const next = window.prompt("Rename chat", currentTitle || "");
+        if (next === null) return;
+        const title = next.trim();
+        if (!title) return;
+
+        try {
+            const record = await fetchJSON(sessionUrl(sessionId), {
+                method: "PATCH",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ title, user_id: state.userId }),
             });
+            state.sessions = state.sessions.map((session) =>
+                session.session_id === sessionId ? Object.assign({}, session, { title: record.title }) : session
+            );
+            const convo = state.conversations.find((c) => c.id === sessionId || c.sessionId === sessionId);
+            if (convo) convo.title = record.title;
+            saveConversations();
+            renderHistory();
+        } catch (error) {
+            window.alert("Could not rename chat: " + error.message);
+        }
+    }
+
+    async function deleteSession(sessionId) {
+        if (state.sending) return;
+        if (!window.confirm("Delete this chat? This cannot be undone.")) return;
+
+        try {
+            await fetchJSON(sessionUrl(sessionId), { method: "DELETE" });
+        } catch (error) {
+            window.alert("Could not delete chat: " + error.message);
+            return;
+        }
+
+        state.sessions = state.sessions.filter((session) => session.session_id !== sessionId);
+        state.conversations = state.conversations.filter((c) => c.id !== sessionId && c.sessionId !== sessionId);
+        if (state.activeId === sessionId) {
+            state.activeId = null;
+            renderWelcome();
+        }
+        saveConversations();
+        renderHistory();
     }
 
     function openConversation(id) {
         if (state.sending) return;
+        state.pendingNewChat = false;
         state.activeId = id;
         const convo = activeConversation();
         if (convo) {
@@ -438,8 +605,22 @@
         saveConversations();
     }
 
-    function deleteConversation(id) {
+    function renameLocalConversation(id) {
+        const convo = state.conversations.find((c) => c.id === id);
+        if (!convo) return;
+        const next = window.prompt("Rename chat", convo.title || "");
+        if (next === null) return;
+        const title = next.trim();
+        if (!title) return;
+        convo.title = title;
+        convo.updatedAt = Date.now();
+        saveConversations();
+        renderHistory();
+    }
+
+    function deleteLocalConversation(id) {
         if (state.sending) return;
+        if (!window.confirm("Delete this chat? This cannot be undone.")) return;
         state.conversations = state.conversations.filter((c) => c.id !== id);
         if (state.activeId === id) {
             state.activeId = null;
@@ -448,17 +629,6 @@
         saveConversations();
         renderHistory();
     }
-
-    el.clearHistoryBtn.addEventListener("click", () => {
-        if (state.sending) return;
-        if (!state.conversations.length) return;
-        if (!window.confirm("Delete all conversations? This cannot be undone.")) return;
-        state.conversations = [];
-        state.activeId = null;
-        saveConversations();
-        renderHistory();
-        renderWelcome();
-    });
 
     /* ---------------- rendering ---------------- */
 
@@ -494,7 +664,7 @@
     function buildMessage(message, convo) {
         const isUser = message.role === "user";
         const agentKey = message.agent || convo.agent || state.agent;
-        const meta = AGENTS[agentKey] || AGENTS.chat;
+        const meta = AGENTS[agentKey] || AGENTS.snow;
 
         const row = document.createElement("div");
         row.className = "msg " + (isUser ? "user" : "assistant");
@@ -567,7 +737,7 @@
     }
 
     function buildTyping(agentKey) {
-        const meta = AGENTS[agentKey] || AGENTS.chat;
+        const meta = AGENTS[agentKey] || AGENTS.snow;
         const row = document.createElement("div");
         row.className = "msg assistant";
         row.dataset.typing = "true";
@@ -698,6 +868,13 @@
     /* ---------------- sending ---------------- */
 
     function ensureConversation(text) {
+        // A chat started with "New chat" must never inherit the previous
+        // conversation, even if a stale activeId is still around.
+        if (state.pendingNewChat) {
+            state.activeId = null;
+            state.pendingNewChat = false;
+        }
+
         let convo = activeConversation();
         if (convo) return convo;
 
@@ -748,12 +925,19 @@
                 body: JSON.stringify({
                     message: message,
                     session_id: convo.sessionId || null,
+                    new_session: !convo.sessionId,
+                    user_id: state.userId,
                     agent: state.agent,
                     table_name: state.table,
                 }),
             });
 
-            convo.sessionId = response.session_id || convo.sessionId;
+            if (response.session_id) {
+                const previousId = convo.id;
+                convo.sessionId = response.session_id;
+                convo.id = response.session_id;
+                if (state.activeId === previousId) state.activeId = response.session_id;
+            }
             assistantMessage = {
                 role: "assistant",
                 content: response.response || "(empty response)",
@@ -775,9 +959,12 @@
         state.sending = false;
         setComposerBusy(false);
         saveConversations();
-        renderHistory();
         renderConversation();
         updateRuntimeStatus(assistantMessage.error ? "error" : "online");
+
+        // Refresh the left-nav history so the new title/order appears.
+        if (!assistantMessage.error) loadSessions();
+        else renderHistory();
     }
 
     async function fetchJSON(url, options) {
@@ -874,7 +1061,7 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     message: changeNumber,
-                    agent: "change_qa_agent",
+                    agent: "ci_qa",
                 }),
             });
 
@@ -995,11 +1182,7 @@
             }
         } else {
             if (el.dashAwsMessage) {
-        if (el.dashAwsMessage) {
-        if (el.dashAwsMessage) {
-            el.dashAwsMessage.hidden = true;
-        }
-        }
+                el.dashAwsMessage.hidden = true;
                 el.dashAwsMessage.textContent = "";
             }
         }
@@ -1160,6 +1343,7 @@
         const metrics = data.stats || {};
         const endpoints = data.endpoints || [];
         const recent = data.invocations || [];
+        if (data.source === "live" || data.mode === "live") state.dashboardMode = "live";
 
         const tokenSource = metrics.token_source || (metrics.tokens_estimated === false ? "bedrock" : "estimated");
         const tokenLabel = tokenSource === "bedrock" ? "Bedrock tokens" : tokenSource === "demo" ? "Tokens (demo)" : "Estimated tokens";
@@ -1234,9 +1418,9 @@
         if (el.dashAwsStatus) {
             el.dashAwsStatus.textContent = "Unavailable";
         }
-        el.dashDynatraceKpis.innerHTML = "";
-        el.dashDynatraceStatus.textContent = "Unavailable";
-        el.dashAwsMessage.hidden = true;
+        if (el.dashAwsMessage) {
+            el.dashAwsMessage.hidden = true;
+        }
     }
 
     async function loadDashboard() {
@@ -1290,15 +1474,14 @@
 
     el.dashRefresh.addEventListener("click", loadDashboard);
     el.obsRefresh.addEventListener("click", loadObservability);
-    el.dashModeDemo.addEventListener("click", () => setDashboardMode("demo"));
-    el.dashModeLive.addEventListener("click", () => setDashboardMode("live"));
-    el.obsModeDemo.addEventListener("click", () => setDashboardMode("demo"));
-    el.obsModeLive.addEventListener("click", () => setDashboardMode("live"));
+    if (el.dashModeDemo) el.dashModeDemo.addEventListener("click", () => setDashboardMode("demo"));
+    if (el.dashModeLive) el.dashModeLive.addEventListener("click", () => setDashboardMode("live"));
 
-    el.newChatBtn.addEventListener("click", () => {
+    function startNewChat() {
         if (state.sending) return;
         setView("chat");
         state.activeId = null;
+        state.pendingNewChat = true;
         safeRemove(ACTIVE_KEY);
         renderWelcome();
         renderHistory();
@@ -1307,7 +1490,10 @@
         updateSendState();
         closeSidebar();
         el.input.focus();
-    });
+    }
+
+    el.newChatBtn.addEventListener("click", startNewChat);
+    if (el.railNewChat) el.railNewChat.addEventListener("click", startNewChat);
 
     /* ---------------- runtime status ---------------- */
 
@@ -1381,6 +1567,7 @@
     loadTables();
     setAgent(state.agent, false);
     renderHistory();
+    loadSessions();
 
     if (state.activeId && activeConversation()) {
         renderConversation();

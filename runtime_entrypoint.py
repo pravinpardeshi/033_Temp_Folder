@@ -1,3 +1,4 @@
+import asyncio
 import time
 import uuid
 from pathlib import Path
@@ -10,15 +11,45 @@ from starlette.staticfiles import StaticFiles
 
 import monitoring
 from config import settings
-from session_memory_store import SessionMemoryService, new_session_id
+from session_memory_store import SessionMemoryConfig, SessionMemoryService, new_session_id
 from orchestrator import orchestrator
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
 
 app = BedrockAgentCoreApp()
-session_service = SessionMemoryService()
+session_service = SessionMemoryService(
+    config=SessionMemoryConfig(
+        region=settings.AWS_REGION,
+        memory_id=settings.MEMORY_ID,
+        sessions_table=settings.SESSIONS_TABLE,
+        memory_enabled=settings.MEMORY_ENABLED,
+        context_turns=settings.MEMORY_CONTEXT_TURNS,
+        title_max_chars=settings.SESSION_TITLE_MAX_CHARS,
+        rename_max_chars=settings.SESSION_TITLE_RENAME_MAX_CHARS,
+        session_ttl_days=settings.SESSION_TTL_DAYS,
+    )
+)
 app.add_middleware(monitoring.MonitoringMiddleware)
+
+
+def _actor_id(request: Request, payload: dict | None = None) -> str:
+    """Resolve the authenticated user id.
+
+    SSO is assumed to run in front of the runtime and inject the Entra object
+    id as ``X-Actor-Id`` (or ``X-User-Id``). The body/query ``user_id`` exists
+    only so local development can exercise the API without SSO.
+    """
+    value = (
+        request.headers.get("x-actor-id")
+        or request.headers.get("x-user-id")
+        or (payload or {}).get("user_id")
+        or (payload or {}).get("actor_id")
+        or request.query_params.get("user_id")
+        or "default_user"
+    )
+    return str(value).strip() or "default_user"
+
 
 
 async def _run_agent(prompt: str, session_id: str, agent_key: str | None = None, table_name: str | None = None,) -> str:
@@ -66,7 +97,7 @@ async def invoke(payload, context):
     Expected payload:
         {"prompt": "...", "agent": "snow_agent", "session_id": "optional"}
     For change quality assessment:
-        {"agent": "change_qa_agent", "prompt": "CHG0030001"}
+        {"agent": "ci_qa", "prompt": "CHG0030001"}
     """
     payload = payload or {}
     change_number = payload.get("change_number")
@@ -75,7 +106,7 @@ async def invoke(payload, context):
     agent_key = payload.get("agent")
 
     if change_number and not agent_key:
-        agent_key = "change_qa_agent"
+        agent_key = "ci_qa"
     table_name = payload.get("table_name") or payload.get("table")
 
     if not str(prompt).strip():
@@ -115,7 +146,7 @@ async def assess_change(request: Request) -> JSONResponse:
     session_id = payload.get("session_id") or str(uuid.uuid4())
 
     try:
-        assessment = await _run_agent(change_number, session_id, agent_key="change_qa_agent")
+        assessment = await _run_agent(change_number, session_id, agent_key="ci_qa")
     except Exception as e:
         return JSONResponse({"detail": str(e)}, status_code=500)
 
@@ -130,7 +161,7 @@ async def chat(request: Request) -> JSONResponse:
         return JSONResponse({"detail": "Invalid JSON body."}, status_code=400)
 
     message = payload.get("message") or payload.get("prompt") or ""
-    user_id = payload.get("user_id") or "default_user"
+    user_id = _actor_id(request, payload)
     requested_session_id = str(payload.get("session_id") or "").strip() or None
     agent_key = payload.get("agent")
     table_name = payload.get("table_name") or payload.get("table")
@@ -138,22 +169,17 @@ async def chat(request: Request) -> JSONResponse:
     if not str(message).strip():
         return JSONResponse({"detail": "Missing 'message'."}, status_code=400)
 
-    # Resolve the session id:
-    # 1. Retrieve it from AgentCore if it exists (the requested session,
-    #    otherwise this user's most recently updated session).
-    # 2. Otherwise use the session_id provided by the incoming request as new
-    #    (generate one only when the request carries no id at all).
-    # Lookup failures must never break the chat: fall back to the request id.
-    session_id = None
-    try:
-        if requested_session_id and session_service.session_exists(user_id, requested_session_id):
-            session_id = requested_session_id
-        if session_id is None:
-            session_id = session_service.get_latest_session_id(user_id)
-    except Exception as exc:  # noqa: BLE001
-        print(f"session lookup failed: {exc}")
-    if session_id is None:
-        session_id = requested_session_id or new_session_id()
+    if agent_key and orchestrator.resolve_agent_key(agent_key) is None:
+        return JSONResponse(
+            {"detail": f"Unknown agent: {agent_key}"}, status_code=400
+        )
+
+    # Reuse the caller's session when one is supplied (existing conversation);
+    # otherwise start a brand-new session. `new_session: true` forces a fresh
+    # id even if a stale session_id is present. We never silently attach a new
+    # chat to the user's most recent conversation.
+    force_new = bool(payload.get("new_session"))
+    session_id = new_session_id() if (force_new or not requested_session_id) else requested_session_id
 
     try:
         response_text = await _run_agent(str(message), session_id, agent_key=agent_key, table_name=table_name)
@@ -163,7 +189,8 @@ async def chat(request: Request) -> JSONResponse:
     # Append this turn to the resolved session (AgentCore Memory transcript +
     # DynamoDB metadata). Failures here must never break the chat response.
     try:
-        session_service.save_turn(
+        await asyncio.to_thread(
+            session_service.save_turn,
             actor_id=user_id,
             session_id=session_id,
             user_text=str(message),
@@ -176,11 +203,77 @@ async def chat(request: Request) -> JSONResponse:
     return JSONResponse({"response": response_text, "session_id": session_id})
 
 
+async def list_sessions(request: Request) -> JSONResponse:
+    """List this user's chat sessions, newest first (left-nav history)."""
+    actor_id = _actor_id(request)
+    try:
+        sessions = await asyncio.to_thread(session_service.list_sessions, actor_id)
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"detail": str(exc)}, status_code=500)
+    return JSONResponse({"user_id": actor_id, "sessions": sessions})
+
+
+async def get_session(request: Request) -> JSONResponse:
+    """Return one session's metadata and transcript."""
+    actor_id = _actor_id(request)
+    session_id = request.path_params.get("session_id", "")
+    try:
+        data = await asyncio.to_thread(
+            session_service.get_session, actor_id, session_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"detail": str(exc)}, status_code=500)
+    if data is None:
+        return JSONResponse({"detail": "Session not found."}, status_code=404)
+    return JSONResponse(data)
+
+
+async def rename_session(request: Request) -> JSONResponse:
+    """Rename a chat (title stored in DynamoDB)."""
+    actor_id = _actor_id(request)
+    session_id = request.path_params.get("session_id", "")
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "Invalid JSON body."}, status_code=400)
+
+    title = str(payload.get("title") or "").strip()
+    if not title:
+        return JSONResponse({"detail": "Missing 'title'."}, status_code=400)
+
+    try:
+        record = await asyncio.to_thread(
+            session_service.rename_session, actor_id, session_id, title
+        )
+    except Exception as exc:  # noqa: BLE001
+        if "ConditionalCheckFailed" in exc.__class__.__name__ or "ConditionalCheckFailed" in str(exc):
+            return JSONResponse({"detail": "Session not found."}, status_code=404)
+        return JSONResponse({"detail": str(exc)}, status_code=500)
+    return JSONResponse(record)
+
+
+async def delete_session(request: Request) -> JSONResponse:
+    """Delete a chat's metadata and transcript."""
+    actor_id = _actor_id(request)
+    session_id = request.path_params.get("session_id", "")
+    try:
+        deleted_events = await asyncio.to_thread(
+            session_service.delete_session, actor_id, session_id
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse({"detail": str(exc)}, status_code=500)
+    return JSONResponse({"deleted": True, "session_id": session_id, "deleted_events": deleted_events})
+
+
 # AgentCore SDK registers /invocations, /ping and /ws in __init__.
 # Append UI, health, monitoring and static routes afterwards.
 app.router.routes.extend([
     Route("/", index, methods=["GET"]),
     Route("/chat", chat, methods=["POST"]),
+    Route("/api/sessions", list_sessions, methods=["GET"]),
+    Route("/api/sessions/{session_id}", get_session, methods=["GET"]),
+    Route("/api/sessions/{session_id}", rename_session, methods=["PATCH"]),
+    Route("/api/sessions/{session_id}", delete_session, methods=["DELETE"]),
     Route("/api/change/assess", assess_change, methods=["POST"]),
     Route("/api/tables", tables, methods=["GET"]),
     Route("/health", monitoring.health, methods=["GET"]),

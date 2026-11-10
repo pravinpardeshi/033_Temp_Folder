@@ -12,6 +12,7 @@ State flows through a TypedDict (``SnowState``); each node is a sync
 function that LangGraph runs in a thread during ``ainvoke``.
 """
 
+import asyncio
 import json
 
 import boto3
@@ -276,7 +277,9 @@ class SnowAgent(BaseAgent):
             "answer": "",
         }
         try:
-            final_state = await self.graph.ainvoke(initial_state)
+            # Graph nodes are synchronous (psycopg2 + boto3), so run the whole
+            # pipeline in a worker thread to keep the event loop responsive.
+            final_state = await asyncio.to_thread(self.graph.invoke, initial_state)
             return final_state["answer"]
         except Exception as e:
             return f"Error querying the incident vector store: {e}"

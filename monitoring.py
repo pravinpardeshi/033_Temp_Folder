@@ -6,6 +6,7 @@ Provides the routes expected by the AgentCore monitoring dashboard:
     GET /api/monitor/invocations?limit=50
 """
 
+import asyncio
 import contextvars
 import time
 from datetime import datetime, timezone
@@ -316,7 +317,7 @@ async def get_dashboard(request: Request) -> JSONResponse:
     """Return live dashboard data."""
     try:
         from live_monitoring import build_live_dashboard
-        data = build_live_dashboard()
+        data = await asyncio.to_thread(build_live_dashboard)
     except Exception as exc:  # noqa: BLE001 - surfaced to the dashboard
         return JSONResponse(
             {"mode": "live", "error": f"Could not build live dashboard: {exc}"},

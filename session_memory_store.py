@@ -7,8 +7,9 @@ the agents.
 
 Two stores are used:
 
-* ``SessionRepository``     - DynamoDB metadata (title, timestamps, ownership).
-* ``AgentCoreMemoryStore``  - AgentCore Memory transcript (user/assistant turns).
+* ``SessionRepository``     - DynamoDB session metadata (title, timestamps,
+  ownership) plus the transcript turns, so history works without Memory.
+* ``AgentCoreMemoryStore``  - optional AgentCore Memory transcript (user/assistant turns).
 
 ``SessionMemoryService`` combines them into the operations the API needs:
 create a session, save a turn, list sessions, load a transcript, rename, and
@@ -155,13 +156,22 @@ class SessionRecord:
         }
 
 
+_MESSAGE_SK_PREFIX = "MESSAGE#"
+
+
+def _message_sort_key(session_id: str, sequence: int) -> str:
+    """Sortable message SK so transcripts read back in insertion order."""
+    return f"{_MESSAGE_SK_PREFIX}{session_id}#{sequence:020d}#{uuid.uuid4().hex[:8]}"
+
+
 class SessionRepository:
-    """DynamoDB CRUD for session metadata.
+    """DynamoDB CRUD for session metadata and transcript.
 
     Table schema::
 
         PK = USER#<actor_id>
-        SK = SESSION#<session_id>
+        SK = SESSION#<session_id>                  (metadata)
+        SK = MESSAGE#<session_id>#<sequence>       (transcript turn)
     """
 
     def __init__(
@@ -305,7 +315,79 @@ class SessionRepository:
         return self._from_item(response["Attributes"])
 
     def delete(self, actor_id: str, session_id: str) -> None:
+        """Delete the transcript turns and the session metadata row."""
+        self.delete_messages(actor_id, session_id)
         self.table.delete_item(Key=self._keys(actor_id, session_id))
+
+    # -- transcript (stored in the same table) -----------------------------
+
+    def append_message(
+        self,
+        actor_id: str,
+        session_id: str,
+        role: str,
+        content: str,
+        agent: str = "",
+    ) -> None:
+        """Append one chat turn to the DynamoDB transcript."""
+        item = {
+            "PK": f"USER#{validate_actor_id(actor_id)}",
+            "SK": _message_sort_key(session_id, time.time_ns()),
+            "session_id": session_id,
+            "role": str(role or "user"),
+            "content": str(content or "")[:4000],
+            "agent": agent,
+            "created_at": utcnow_iso(),
+        }
+        ttl = self._ttl_epoch()
+        if ttl is not None:
+            item["ttl"] = ttl
+        self.table.put_item(Item=item)
+
+    def _query_messages(self, actor_id: str, session_id: str) -> List[Dict[str, Any]]:
+        kwargs = {
+            "KeyConditionExpression": (
+                Key("PK").eq(f"USER#{validate_actor_id(actor_id)}")
+                & Key("SK").begins_with(f"{_MESSAGE_SK_PREFIX}{session_id}#")
+            )
+        }
+        items: List[Dict[str, Any]] = []
+        while True:
+            response = self.table.query(**kwargs)
+            items.extend(response.get("Items", []))
+            last_key = response.get("LastEvaluatedKey")
+            if not last_key:
+                break
+            kwargs["ExclusiveStartKey"] = last_key
+
+        items.sort(key=lambda item: str(item.get("SK", "")))
+        return items
+
+    def list_messages(
+        self,
+        actor_id: str,
+        session_id: str,
+        limit: int = 200,
+    ) -> List[Dict[str, Any]]:
+        """Return transcript turns, oldest first."""
+        items = self._query_messages(actor_id, session_id)
+        if limit:
+            items = items[-limit:]
+        return [
+            {
+                "role": item.get("role", ""),
+                "content": item.get("content", ""),
+                "agent": item.get("agent", ""),
+                "timestamp": item.get("created_at", ""),
+            }
+            for item in items
+        ]
+
+    def delete_messages(self, actor_id: str, session_id: str) -> int:
+        items = self._query_messages(actor_id, session_id)
+        for item in items:
+            self.table.delete_item(Key={"PK": item["PK"], "SK": item["SK"]})
+        return len(items)
 
 
 # ---------------------------------------------------------------------------
@@ -324,9 +406,17 @@ class AgentCoreMemoryStore:
     ):
         self.memory_id = memory_id
         self.enabled = bool(enabled and memory_id)
-        self.client = client or boto3.client(
-            "bedrock-agentcore", region_name=region
-        )
+        self._region = region
+        self._client = client
+
+    @property
+    def client(self) -> Any:
+        """Create the data-plane client lazily so Memory stays optional."""
+        if self._client is None:
+            self._client = boto3.client(
+                "bedrock-agentcore", region_name=self._region
+            )
+        return self._client
 
     def save_turn(
         self,
@@ -529,13 +619,17 @@ class SessionMemoryService:
         actor_id = validate_actor_id(actor_id)
         session_id = str(session_id or new_session_id())
 
-        self.memory.save_turn(
-            actor_id=actor_id,
-            session_id=session_id,
-            user_text=user_text,
-            assistant_text=assistant_text,
-            agent_key=agent_key,
-        )
+        # AgentCore Memory is optional; DynamoDB is the durable transcript.
+        try:
+            self.memory.save_turn(
+                actor_id=actor_id,
+                session_id=session_id,
+                user_text=user_text,
+                assistant_text=assistant_text,
+                agent_key=agent_key,
+            )
+        except Exception as exc:  # noqa: BLE001 - never break the chat turn
+            print(f"AgentCore Memory save_turn failed: {exc}")
 
         record = self.repository.get(actor_id, session_id)
         if record is None:
@@ -547,6 +641,14 @@ class SessionMemoryService:
                 ),
                 agent=agent_key,
             )
+
+        self.repository.append_message(
+            actor_id, session_id, "user", user_text, agent_key
+        )
+        self.repository.append_message(
+            actor_id, session_id, "assistant", assistant_text, agent_key
+        )
+
         return self.repository.touch(
             actor_id=actor_id,
             session_id=session_id,
@@ -589,9 +691,12 @@ class SessionMemoryService:
         record = self.repository.get(actor_id, session_id)
         if record is None:
             return None
+        messages = self.repository.list_messages(actor_id, session_id)
+        if not messages:
+            messages = self.memory.list_messages(actor_id, session_id)
         return {
             **record.to_dict(),
-            "messages": self.memory.list_messages(actor_id, session_id),
+            "messages": messages,
         }
 
     def session_exists(self, actor_id: str, session_id: str) -> bool:

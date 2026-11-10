@@ -18,7 +18,7 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="/static/style.css?v=9">
 </head>
 <body>
     <div class="app">
@@ -48,25 +48,11 @@
 
             <div class="section-label">Agents</div>
             <div class="agent-list" id="agentList" role="radiogroup" aria-label="Choose an agent">
-                <button class="agent-item" data-agent="chat" role="radio" title="Chat — General assistant">
+                <button class="agent-item" data-agent="snow" role="radio" title="Chat — ServiceNOW assistant">
                     <span class="agent-icon chat">C</span>
                     <span class="agent-copy">
                         <strong>Chat</strong>
-                        <small>General assistant</small>
-                    </span>
-                </button>
-                <button class="agent-item" data-agent="snow" role="radio" title="SNOW — Closed incident Q&A">
-                    <span class="agent-icon snow">S</span>
-                    <span class="agent-copy">
-                        <strong>SNOW</strong>
-                        <small>Closed incident Q&amp;A</small>
-                    </span>
-                </button>
-                <button class="agent-item" data-agent="rca" role="radio" title="RCA — Root cause analysis">
-                    <span class="agent-icon rca">R</span>
-                    <span class="agent-copy">
-                        <strong>RCA</strong>
-                        <small>Root cause analysis</small>
+                        <small>ServiceNOW assistant</small>
                     </span>
                 </button>
             </div>
@@ -96,12 +82,6 @@
                 </button>
             </div>
 
-            <div class="section-label history-label">
-                <span>History</span>
-                <button class="link-btn" id="clearHistoryBtn" title="Delete all conversations">Clear</button>
-            </div>
-            <div class="history" id="historyList"></div>
-
             <div class="sidebar-foot">
                 <button class="theme-toggle" id="themeToggle" aria-label="Toggle theme" title="Toggle theme">
                     <span class="theme-icon" id="themeIcon" aria-hidden="true"></span>
@@ -113,6 +93,17 @@
                     <span id="statusText">Checking runtime…</span>
                 </div>
             </div>
+        </aside>
+
+        <aside class="chat-rail" id="chatRail" aria-label="Chat history" hidden>
+            <div class="rail-head">
+                <span class="rail-title">Chats</span>
+                <button class="rail-new" id="railNewChat" type="button" title="New chat" aria-label="New chat">
+                    <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg>
+                </button>
+            </div>
+            <div class="rail-list" id="railList"></div>
+            <p class="rail-hint" id="railHint" hidden></p>
         </aside>
 
         <div class="backdrop" id="backdrop" hidden></div>
@@ -141,20 +132,10 @@
                     <p class="hero-sub">Pick an agent, then ask about incidents, root causes, or anything else.</p>
 
                     <div class="agent-grid" id="agentGrid">
-                        <button class="agent-card" data-agent="chat">
+                        <button class="agent-card" data-agent="snow">
                             <span class="agent-icon chat">C</span>
                             <strong>Chat</strong>
-                            <span>General assistant for drafting, explanations, and questions that don’t need ticket data.</span>
-                        </button>
-                        <button class="agent-card" data-agent="snow">
-                            <span class="agent-icon snow">S</span>
-                            <strong>SNOW</strong>
-                            <span>Search closed incidents and surface how similar tickets were resolved.</span>
-                        </button>
-                        <button class="agent-card" data-agent="rca">
-                            <span class="agent-icon rca">R</span>
-                            <strong>RCA</strong>
-                            <span>Analyze a new incident against closed history to find the likely root cause.</span>
+                            <span>Ask about closed incidents and how similar tickets were resolved.</span>
                         </button>
                     </div>
 
@@ -300,7 +281,10 @@
         // Set this to the API Gateway URL when the UI is hosted separately.
         // Leave blank when the UI is served by the same runtime.
         window.AGENTCORE_API_BASE = "";
+        // SSO layer should populate this (e.g. Entra object id). The server
+        // prefers the X-Actor-Id header and falls back to this value.
+        window.AGENTCORE_USER_ID = "";
     </script>
-    <script src="/static/script.js"></script>
+    <script src="/static/script.js?v=9"></script>
 </body>
 </html>

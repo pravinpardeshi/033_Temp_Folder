@@ -3,11 +3,15 @@ Create the ChatSessions DynamoDB table for session metadata.
 
 Schema must match SessionRepository in session_memory_store.py:
 
-    PK = USER#<actor_id>      (HASH,  string)
-    SK = SESSION#<session_id> (RANGE, string)
+    PK = USER#<actor_id>                    (HASH,  string)
+    SK = SESSION#<session_id>               (RANGE, string)  session metadata
+    SK = MESSAGE#<session_id>#<sequence>    (RANGE, string)  transcript turns
 
-Item attributes written by the app:
-    title, created_at, updated_at, last_message, agent, message_count
+Session metadata attributes:
+    title, created_at, updated_at, last_message, agent, message_count, ttl
+
+Transcript turn attributes:
+    session_id, role, content, agent, created_at, ttl
 
 Table name comes from SESSIONS_TABLE (default: ChatSessions).
 """

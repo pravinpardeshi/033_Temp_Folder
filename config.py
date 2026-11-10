@@ -14,6 +14,15 @@ class Settings(BaseSettings):
     AWS_SECRET_ACCESS_KEY: str | None = None
     AWS_SESSION_TOKEN: str | None = None
 
+    # Chat session storage (DynamoDB metadata/transcript + optional Memory)
+    SESSIONS_TABLE: str = "ChatSessions"
+    MEMORY_ID: str = ""
+    MEMORY_ENABLED: bool = True
+    MEMORY_CONTEXT_TURNS: int = 10
+    SESSION_TTL_DAYS: int = 30
+    SESSION_TITLE_MAX_CHARS: int = 60
+    SESSION_TITLE_RENAME_MAX_CHARS: int = 100
+
     # Monitoring dashboard
     # Default UI mode.
     MONITOR_DEFAULT_MODE: str = "live"

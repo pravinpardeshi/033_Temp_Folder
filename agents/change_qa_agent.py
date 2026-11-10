@@ -6,6 +6,7 @@ looked up in the pgvector store first; otherwise the assessment is based only
 on the change number and the model is instructed not to invent details.
 """
 
+import asyncio
 import re
 
 import boto3
@@ -112,22 +113,24 @@ class ChangeQAAgent(BaseAgent):
                 "or underscores (maximum 64 characters)."
             )
 
-        context = self._fetch_change(change_number)
+        context = await asyncio.to_thread(self._fetch_change, change_number)
 
         try:
-            response = self.bedrock_runtime.converse(
-                modelId=settings.LLM_MODEL_ID,
-                system=[{"text": CHANGE_SYSTEM_PROMPT}],
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [{"text": self._build_prompt(change_number, context)}],
-                    }
-                ],
-                inferenceConfig={
-                    "maxTokens": self.max_tokens,
-                    "temperature": self.temperature,
-                },
+            response = await asyncio.to_thread(
+                lambda: self.bedrock_runtime.converse(
+                    modelId=settings.LLM_MODEL_ID,
+                    system=[{"text": CHANGE_SYSTEM_PROMPT}],
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [{"text": self._build_prompt(change_number, context)}],
+                        }
+                    ],
+                    inferenceConfig={
+                        "maxTokens": self.max_tokens,
+                        "temperature": self.temperature,
+                    },
+                )
             )
             usage = response.get("usage") or {}
             monitoring.record_token_usage(
