@@ -18,7 +18,7 @@
             }
         })();
     </script>
-    <link rel="stylesheet" href="/static/style.css?v=9">
+    <link rel="stylesheet" href="/static/style.css?v=12">
 </head>
 <body>
     <div class="app">
@@ -145,21 +145,48 @@
 
             <section class="change-view" id="changeView" hidden aria-live="polite">
                 <div class="change-card">
-                    <span class="hero-pill">Change quality</span>
-                    <h1>Change item quality assessment</h1>
-                    <p class="change-sub">Enter a Change Request Number to review its completeness, risk readiness, and implementation quality.</p>
+                    <span class="hero-pill">Change review</span>
+                    <h1>Change item assessment</h1>
+                    <p class="change-sub">Enter a Change Request Number to run a quality review or a risk assessment.</p>
 
-                    <form class="change-form" id="changeForm" autocomplete="off">
-                        <label for="changeNumber">Change Request Number</label>
-                        <div class="change-row">
-                            <input id="changeNumber" name="change_number" type="text" placeholder="CHG0030001" maxlength="64" autocomplete="off" spellcheck="false" required>
-                            <button id="changeSubmit" type="submit">Assess change</button>
-                        </div>
-                        <p class="change-hint">Example: CHG0030001</p>
-                    </form>
+                    <div class="change-tabs" role="tablist" aria-label="Change assessment type">
+                        <button class="change-tab active" id="changeTabQuality" type="button" role="tab"
+                                aria-selected="true" aria-controls="changePanelQuality" data-change-tab="quality">
+                            Quality assessment
+                        </button>
+                        <button class="change-tab" id="changeTabRisk" type="button" role="tab"
+                                aria-selected="false" aria-controls="changePanelRisk" data-change-tab="risk" tabindex="-1">
+                            Risk assessment
+                        </button>
+                    </div>
 
-                    <p class="change-status" id="changeStatus" hidden></p>
-                    <div class="change-result" id="changeResult" hidden></div>
+                    <div class="change-panel" id="changePanelQuality" role="tabpanel" aria-labelledby="changeTabQuality">
+                        <form class="change-form" id="changeForm" autocomplete="off">
+                            <label for="changeNumber">Change Request Number</label>
+                            <div class="change-row">
+                                <input id="changeNumber" name="change_number" type="text" placeholder="CHG0030001" maxlength="64" autocomplete="off" spellcheck="false" required>
+                                <button id="changeSubmit" type="submit">Assess change</button>
+                            </div>
+                            <p class="change-hint">Example: CHG0030001</p>
+                        </form>
+
+                        <p class="change-status" id="changeStatus" hidden></p>
+                        <div class="change-result" id="changeResult" hidden></div>
+                    </div>
+
+                    <div class="change-panel" id="changePanelRisk" role="tabpanel" aria-labelledby="changeTabRisk" hidden>
+                        <form class="change-form" id="riskForm" autocomplete="off">
+                            <label for="riskNumber">Change item number</label>
+                            <div class="change-row">
+                                <input id="riskNumber" name="change_item_number" type="text" placeholder="CHG0030001" maxlength="64" autocomplete="off" spellcheck="false" required>
+                                <button id="riskSubmit" type="submit">Assess risk</button>
+                            </div>
+                            <p class="change-hint">Example: CHG0030001</p>
+                        </form>
+
+                        <p class="change-status" id="riskStatus" hidden></p>
+                        <div class="change-result" id="riskResult" hidden></div>
+                    </div>
                 </div>
             </section>
 
@@ -285,6 +312,6 @@
         // prefers the X-Actor-Id header and falls back to this value.
         window.AGENTCORE_USER_ID = "";
     </script>
-    <script src="/static/script.js?v=9"></script>
+    <script src="/static/script.js?v=12"></script>
 </body>
 </html>

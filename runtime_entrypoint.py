@@ -1,5 +1,8 @@
 import asyncio
+import json
 import time
+import urllib.error
+import urllib.request
 import uuid
 from pathlib import Path
 
@@ -23,6 +26,7 @@ session_service = SessionMemoryService(
         region=settings.AWS_REGION,
         memory_id=settings.MEMORY_ID,
         sessions_table=settings.SESSIONS_TABLE,
+        endpoint_url=settings.DYNAMODB_ENDPOINT_URL,
         memory_enabled=settings.MEMORY_ENABLED,
         context_turns=settings.MEMORY_CONTEXT_TURNS,
         title_max_chars=settings.SESSION_TITLE_MAX_CHARS,
@@ -153,6 +157,97 @@ async def assess_change(request: Request) -> JSONResponse:
     return JSONResponse({ "change_number": change_number, "assessment": assessment, })
 
 
+def _post_risk_assessment(
+    url: str,
+    payload: dict,
+    token: str,
+    timeout: float,
+) -> tuple[int, str]:
+    """POST a JSON payload to the configured risk assessment service."""
+    data = json.dumps(payload).encode("utf-8")
+    headers = {"Content-Type": "application/json", "Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return response.status, response.read().decode("utf-8", "replace")
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read().decode("utf-8", "replace")
+
+
+async def risk_assessment(request: Request) -> JSONResponse:
+    """UI-facing risk assessment endpoint.
+
+    Proxies the change item to the external risk service configured in
+    ``RISK_ASSESSMENT_URL`` and returns its response unchanged.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        return JSONResponse({"detail": "Invalid JSON body."}, status_code=400)
+
+    if not isinstance(payload, dict):
+        payload = {"change_number": payload}
+
+    change_item = (
+        payload.get("change_item_number")
+        or payload.get("change_number")
+        or payload.get("change")
+    )
+    change_item = str(change_item or "").strip()
+
+    if not change_item:
+        return JSONResponse(
+            {"detail": "Missing 'change_item_number'."}, status_code=400
+        )
+
+    url = (settings.RISK_ASSESSMENT_URL or "").strip()
+    if not url:
+        return JSONResponse(
+            {
+                "detail": (
+                    "Risk assessment service is not configured. "
+                    "Set RISK_ASSESSMENT_URL to the external endpoint."
+                )
+            },
+            status_code=503,
+        )
+
+    body = dict(payload)
+    body["change_item_number"] = change_item
+    body.setdefault("change_number", change_item)
+
+    try:
+        status, raw = await asyncio.to_thread(
+            _post_risk_assessment,
+            url,
+            body,
+            settings.RISK_ASSESSMENT_TOKEN,
+            settings.RISK_ASSESSMENT_TIMEOUT,
+        )
+    except Exception as exc:  # noqa: BLE001
+        return JSONResponse(
+            {"detail": f"Risk assessment request failed: {exc}"}, status_code=502
+        )
+
+    if status >= 400:
+        return JSONResponse(
+            {
+                "detail": f"Risk assessment service returned HTTP {status}.",
+                "response": raw[:2000],
+            },
+            status_code=502,
+        )
+
+    try:
+        data = json.loads(raw) if raw.strip() else {}
+    except json.JSONDecodeError:
+        data = raw
+
+    return JSONResponse({"change_number": change_item, "assessment": data})
+
+
 async def chat(request: Request) -> JSONResponse:
     """UI-facing chat endpoint (kept separate from the AgentCore contract)."""
     try:
@@ -275,6 +370,7 @@ app.router.routes.extend([
     Route("/api/sessions/{session_id}", rename_session, methods=["PATCH"]),
     Route("/api/sessions/{session_id}", delete_session, methods=["DELETE"]),
     Route("/api/change/assess", assess_change, methods=["POST"]),
+    Route("/riskassessment", risk_assessment, methods=["POST"]),
     Route("/api/tables", tables, methods=["GET"]),
     Route("/health", monitoring.health, methods=["GET"]),
     Route("/api/monitor/dashboard", monitoring.get_dashboard, methods=["GET"]),

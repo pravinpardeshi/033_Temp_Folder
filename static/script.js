@@ -10,6 +10,7 @@
     const API_BASE = (window.AGENTCORE_API_BASE || "").replace(/\/+$/, "");
     const CHAT_PATH = "/chat";
     const SESSIONS_PATH = "/api/sessions";
+    const RISK_PATH = "/riskassessment";
     const USER_ID = window.AGENTCORE_USER_ID || "default_user";
 
     const SERVER_AGENT_MAP = {
@@ -83,6 +84,15 @@
         changeSubmit: $("#changeSubmit"),
         changeStatus: $("#changeStatus"),
         changeResult: $("#changeResult"),
+        changeTabQuality: $("#changeTabQuality"),
+        changeTabRisk: $("#changeTabRisk"),
+        changePanelQuality: $("#changePanelQuality"),
+        changePanelRisk: $("#changePanelRisk"),
+        riskForm: $("#riskForm"),
+        riskNumber: $("#riskNumber"),
+        riskSubmit: $("#riskSubmit"),
+        riskStatus: $("#riskStatus"),
+        riskResult: $("#riskResult"),
         dashboardView: $("#dashboardView"),
         dashStats: $("#dashStats"),
         dashEndpoints: $("#dashEndpoints"),
@@ -124,6 +134,8 @@
         activeId: safeGet(ACTIVE_KEY) || null,
         sending: false,
         changeSending: false,
+        riskSending: false,
+        changeTab: "quality",
         view: "chat",
         dashboardLoading: false,
         dashboardPending: false,
@@ -293,7 +305,7 @@
         if (isChange) {
             el.activeAgentName.textContent = "CI QA";
             el.activeAgentChip.textContent = "ci_qa";
-            el.changeNumber.focus();
+            setChangeTab(state.changeTab, true);
         } else if (isMonitor) {
             el.activeAgentName.textContent = "Dashboard";
             el.activeAgentChip.textContent = "monitor";
@@ -404,14 +416,21 @@
         const open = document.createElement("button");
         open.type = "button";
         open.className = "rail-open";
-        open.title = title || "Chat";
+        const labelText = title || "Untitled";
+        open.title = id ? (labelText + "\nSession: " + id) : labelText;
         const dot = document.createElement("span");
         dot.className = "rail-dot";
         const label = document.createElement("span");
         label.className = "rail-label";
-        label.textContent = title || "Untitled";
+        label.textContent = labelText;
         open.appendChild(dot);
         open.appendChild(label);
+        if (id) {
+            const sid = document.createElement("span");
+            sid.className = "rail-id";
+            sid.textContent = String(id).slice(0, 8);
+            open.appendChild(sid);
+        }
         open.addEventListener("click", onOpen);
 
         const actions = document.createElement("div");
@@ -455,9 +474,11 @@
 
         const activeId = activeSessionId();
 
-        if (state.sessionsLoaded && state.sessions.length) {
+        if (state.sessionsLoaded) {
+            const serverIds = new Set();
             state.sessions.forEach((session) => {
                 const id = session.session_id;
+                serverIds.add(id);
                 el.railList.appendChild(historyItem({
                     id,
                     title: session.title,
@@ -467,7 +488,28 @@
                     onDelete: () => deleteSession(id),
                 }));
             });
-            return;
+
+            // Show the UI-created "New chat" immediately, before it is saved
+            // to DynamoDB by the first message.
+            const pending = activeConversation();
+            if (
+                pending &&
+                pending.sessionId &&
+                !serverIds.has(pending.sessionId) &&
+                (!pending.messages || pending.messages.length === 0)
+            ) {
+                const pendingRow = historyItem({
+                    id: pending.sessionId,
+                    title: pending.title || "New chat",
+                    active: pending.sessionId === activeId,
+                    onOpen: () => openConversation(pending.id),
+                    onRename: null,
+                    onDelete: () => deleteLocalConversation(pending.id),
+                });
+                el.railList.insertBefore(pendingRow, el.railList.firstChild);
+            }
+
+            if (state.sessions.length || el.railList.childElementCount) return;
         }
 
         // Offline/local fallback so the browser still has usable history.
@@ -513,7 +555,7 @@
                     title: data.title || "Untitled",
                     agent: agentFromServer(data.agent),
                     table: state.table,
-                    sessionId,
+                    sessionId: data.session_id || sessionId,
                     messages: (data.messages || []).map((message) => ({
                         role: message.role === "assistant" ? "assistant" : "user",
                         content: message.content || "",
@@ -593,6 +635,15 @@
         state.activeId = id;
         const convo = activeConversation();
         if (convo) {
+            // If this conversation is backed by a DynamoDB session but has no
+            // local transcript, load the historic messages from the backend.
+            if (
+                convo.sessionId &&
+                (!convo.messages || convo.messages.length === 0)
+            ) {
+                openSession(convo.sessionId);
+                return;
+            }
             setAgent(convo.agent || state.agent);
             if (convo.table && state.tables.includes(convo.table)) {
                 state.table = convo.table;
@@ -867,9 +918,21 @@
 
     /* ---------------- sending ---------------- */
 
+    function newSessionId() {
+        // UI-generated session id for new chats. Sent to the backend and stored
+        // in DynamoDB. Keep it alphanumeric for AgentCore compatibility.
+        if (window.crypto && window.crypto.randomUUID) {
+            return window.crypto.randomUUID().replace(/-/g, "");
+        }
+        if (window.crypto && window.crypto.getRandomValues) {
+            const bytes = new Uint8Array(16);
+            window.crypto.getRandomValues(bytes);
+            return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+        }
+        return "s" + Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
+    }
+
     function ensureConversation(text) {
-        // A chat started with "New chat" must never inherit the previous
-        // conversation, even if a stale activeId is still around.
         if (state.pendingNewChat) {
             state.activeId = null;
             state.pendingNewChat = false;
@@ -878,17 +941,19 @@
         let convo = activeConversation();
         if (convo) return convo;
 
+        // UI creates the session id and passes it to the backend for storage.
+        const sid = newSessionId();
         convo = {
-            id: uid(),
-            title: text.slice(0, 60),
+            id: sid,
+            title: (text || "New chat").slice(0, 60),
             agent: state.agent,
             table: state.table,
-            sessionId: null,
+            sessionId: sid,
             messages: [],
             updatedAt: Date.now(),
         };
         state.conversations.unshift(convo);
-        state.activeId = convo.id;
+        state.activeId = sid;
         return convo;
     }
 
@@ -924,8 +989,8 @@
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     message: message,
-                    session_id: convo.sessionId || null,
-                    new_session: !convo.sessionId,
+                    session_id: convo.sessionId || convo.id,
+                    new_session: false,
                     user_id: state.userId,
                     agent: state.agent,
                     table_name: state.table,
@@ -1035,6 +1100,37 @@
 
     /* ---------------- change quality assessment ---------------- */
 
+    function setChangeTab(tab, focusInput) {
+        const next = tab === "risk" ? "risk" : "quality";
+        state.changeTab = next;
+
+        [el.changeTabQuality, el.changeTabRisk].forEach((btn) => {
+            if (!btn) return;
+            const active = btn.dataset.changeTab === next;
+            btn.classList.toggle("active", active);
+            btn.setAttribute("aria-selected", active ? "true" : "false");
+            btn.tabIndex = active ? 0 : -1;
+        });
+
+        if (el.changePanelQuality) el.changePanelQuality.hidden = next !== "quality";
+        if (el.changePanelRisk) el.changePanelRisk.hidden = next !== "risk";
+
+        if (focusInput) {
+            const input = next === "risk" ? el.riskNumber : el.changeNumber;
+            if (input) input.focus();
+        }
+    }
+
+    $$("[data-change-tab]").forEach((btn) => {
+        btn.addEventListener("click", () => setChangeTab(btn.dataset.changeTab, true));
+        btn.addEventListener("keydown", (event) => {
+            if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+            event.preventDefault();
+            const next = state.changeTab === "quality" ? "risk" : "quality";
+            setChangeTab(next, true);
+        });
+    });
+
     function setChangeBusy(busy) {
         state.changeSending = busy;
         el.changeNumber.disabled = busy;
@@ -1083,6 +1179,82 @@
             updateRuntimeStatus("error");
         } finally {
             setChangeBusy(false);
+        }
+    });
+
+    function setRiskBusy(busy) {
+        state.riskSending = busy;
+        el.riskNumber.disabled = busy;
+        el.riskSubmit.disabled = busy;
+    }
+
+    function riskAssessmentText(data) {
+        if (typeof data === "string") return data;
+        if (!data || typeof data !== "object") return String(data || "");
+
+        const keys = [
+            "assessment",
+            "risk_assessment",
+            "riskAssessment",
+            "result",
+            "response",
+            "message",
+            "summary",
+            "detail",
+            "data",
+        ];
+        for (const key of keys) {
+            const value = data[key];
+            if (typeof value === "string" && value.trim()) return value;
+            if (value && typeof value === "object") {
+                return "```json\n" + JSON.stringify(value, null, 2) + "\n```";
+            }
+        }
+        return "```json\n" + JSON.stringify(data, null, 2) + "\n```";
+    }
+
+    el.riskForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (state.riskSending) return;
+
+        const changeItem = el.riskNumber.value.trim();
+        if (!changeItem) return;
+
+        setRiskBusy(true);
+        el.riskResult.hidden = true;
+        el.riskResult.innerHTML = "";
+        el.riskStatus.hidden = false;
+        el.riskStatus.className = "change-status loading";
+        el.riskStatus.textContent = "Assessing risk for " + changeItem + "…";
+
+        try {
+            const data = await fetchJSON(apiUrl(RISK_PATH), {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    change_item_number: changeItem,
+                    change_number: changeItem,
+                }),
+            });
+
+            el.riskStatus.hidden = true;
+            el.riskResult.hidden = false;
+            el.riskResult.innerHTML =
+                '<div class="change-result-head">' +
+                "<strong>" + escapeHtml(changeItem) + "</strong>" +
+                "<span>Risk assessment</span>" +
+                "</div>" +
+                '<div class="change-result-body">' +
+                renderMarkdown(riskAssessmentText(data) || "(empty response)") +
+                "</div>";
+            updateRuntimeStatus("online");
+        } catch (error) {
+            el.riskStatus.hidden = false;
+            el.riskStatus.className = "change-status error";
+            el.riskStatus.textContent = error.message || "Request failed.";
+            updateRuntimeStatus("error");
+        } finally {
+            setRiskBusy(false);
         }
     });
 
@@ -1480,9 +1652,25 @@
     function startNewChat() {
         if (state.sending) return;
         setView("chat");
-        state.activeId = null;
-        state.pendingNewChat = true;
-        safeRemove(ACTIVE_KEY);
+
+        // New Chat: UI creates the session id and passes it to the backend.
+        // The DynamoDB session row is created on the first message.
+        const sid = newSessionId();
+        const convo = {
+            id: sid,
+            title: "New chat",
+            agent: state.agent,
+            table: state.table,
+            sessionId: sid,
+            messages: [],
+            updatedAt: Date.now(),
+        };
+        state.conversations.unshift(convo);
+        state.activeId = sid;
+        state.pendingNewChat = false;
+        safeSet(ACTIVE_KEY, sid);
+        saveConversations();
+
         renderWelcome();
         renderHistory();
         el.input.value = "";

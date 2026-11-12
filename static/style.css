@@ -656,6 +656,19 @@ kbd {
     cursor: pointer;
 }
 
+.rail-id {
+    margin-left: auto;
+    padding: 1px 6px;
+    border-radius: 999px;
+    border: 1px solid var(--border);
+    background: var(--surface-3);
+    color: var(--muted-2);
+    font-size: 11px;
+    font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", Menlo, monospace;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+}
+
 .rail-open:hover {
     background: var(--surface-2);
 }
@@ -1145,6 +1158,65 @@ kbd {
     color: var(--muted);
     font-size: 19px;
     line-height: 1.6;
+}
+
+.change-tabs {
+    display: flex;
+    gap: 6px;
+    margin: 0 0 24px;
+    padding-bottom: 2px;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+}
+
+.change-tab {
+    position: relative;
+    padding: 10px 14px;
+    border: 0;
+    background: transparent;
+    color: var(--muted);
+    font: inherit;
+    font-size: 16px;
+    font-weight: 650;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: color 0.15s;
+}
+
+.change-tab:hover {
+    color: var(--text);
+}
+
+.change-tab:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
+.change-tab.active {
+    color: var(--text);
+}
+
+.change-tab.active::after {
+    content: "";
+    position: absolute;
+    left: 10px;
+    right: 10px;
+    bottom: -3px;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(135deg, var(--accent), var(--accent-2));
+}
+
+.change-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+}
+
+.change-panel[hidden] {
+    display: none;
 }
 
 .change-form label {

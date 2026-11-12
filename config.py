@@ -16,6 +16,9 @@ class Settings(BaseSettings):
 
     # Chat session storage (DynamoDB metadata/transcript + optional Memory)
     SESSIONS_TABLE: str = "ChatSessions"
+    SSO_USERS_TABLE: str = "SsoUsers"
+    # Point at DynamoDB Local, e.g. http://localhost:8000. Blank = real AWS.
+    DYNAMODB_ENDPOINT_URL: str = ""
     MEMORY_ID: str = ""
     MEMORY_ENABLED: bool = True
     MEMORY_CONTEXT_TURNS: int = 10
@@ -75,6 +78,11 @@ class Settings(BaseSettings):
     CHANGE_TABLE_NAME: str = ""
     CHANGE_QUALITY_MAX_TOKENS: int = 1200
     CHANGE_QUALITY_TEMPERATURE: float = 0.2
+
+    # Risk assessment service proxied by POST /riskassessment
+    RISK_ASSESSMENT_URL: str = ""
+    RISK_ASSESSMENT_TOKEN: str = ""
+    RISK_ASSESSMENT_TIMEOUT: float = 20.0
 
     # Intent router (only used when more than one agent is configured)
     AGENT_ROUTER_MODEL_ID: str = ""

@@ -122,6 +122,7 @@ class SessionMemoryConfig:
     region: str = field(default_factory=lambda: os.environ.get("AWS_REGION", "us-east-1"))
     memory_id: str = field(default_factory=lambda: os.environ.get("MEMORY_ID", ""))
     sessions_table: str = field(default_factory=lambda: os.environ.get("SESSIONS_TABLE", "ChatSessions"))
+    endpoint_url: str = field(default_factory=lambda: os.environ.get("DYNAMODB_ENDPOINT_URL", ""))
     memory_enabled: bool = field(default_factory=lambda: _env_bool("MEMORY_ENABLED", True))
     context_turns: int = field(default_factory=lambda: _env_int("MEMORY_CONTEXT_TURNS", 10))
     title_max_chars: int = field(default_factory=lambda: _env_int("SESSION_TITLE_MAX_CHARS", 60))
@@ -180,8 +181,13 @@ class SessionRepository:
         region: str,
         dynamodb_resource: Any = None,
         ttl_days: int = 30,
+        endpoint_url: str = "",
     ):
-        resource = dynamodb_resource or boto3.resource("dynamodb", region_name=region)
+        resource = dynamodb_resource or boto3.resource(
+            "dynamodb",
+            region_name=region,
+            endpoint_url=endpoint_url or None,
+        )
         self.table = resource.Table(table_name)
         self.ttl_days = ttl_days
 
@@ -594,6 +600,7 @@ class SessionMemoryService:
             self.config.sessions_table,
             self.config.region,
             ttl_days=self.config.session_ttl_days,
+            endpoint_url=self.config.endpoint_url,
         )
         self.memory = memory or AgentCoreMemoryStore(
             self.config.memory_id,

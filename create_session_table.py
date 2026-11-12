@@ -14,6 +14,11 @@ Transcript turn attributes:
     session_id, role, content, agent, created_at, ttl
 
 Table name comes from SESSIONS_TABLE (default: ChatSessions).
+
+Usage:
+    python create_session_table.py --local          # DynamoDB Local :8000
+    python create_session_table.py --endpoint-url http://localhost:8000
+    python create_session_table.py                  # real AWS
 """
 
 import boto3
@@ -22,9 +27,9 @@ from botocore.exceptions import ClientError
 EXPECTED_KEYS = {"PK": "HASH", "SK": "RANGE"}
 
 
-def create_session_table(table_name: str = "ChatSessions", region: str = "us-east-1") -> None:
-    resource = boto3.resource("dynamodb", region_name=region)
-    client = boto3.client("dynamodb", region_name=region)
+def create_session_table(table_name: str = "ChatSessions", region: str = "us-east-1", endpoint_url: str = "",) -> None:
+    resource = boto3.resource("dynamodb", region_name=region, endpoint_url=endpoint_url or None)
+    client = boto3.client("dynamodb", region_name=region, endpoint_url=endpoint_url or None)
 
     # Idempotent: verify an existing table has the schema the app expects.
     try:
@@ -89,4 +94,44 @@ def create_session_table(table_name: str = "ChatSessions", region: str = "us-eas
 
 
 if __name__ == "__main__":
-    create_session_table()
+    import argparse
+    import os
+
+    parser = argparse.ArgumentParser(
+        description="Create the ChatSessions table in DynamoDB (local or AWS)."
+    )
+    parser.add_argument(
+        "--local",
+        action="store_true",
+        help="Create the table in DynamoDB Local at http://localhost:8000.",
+    )
+    parser.add_argument(
+        "--endpoint-url",
+        default=os.environ.get("DYNAMODB_ENDPOINT_URL", ""),
+        help="DynamoDB endpoint (overrides DYNAMODB_ENDPOINT_URL).",
+    )
+    parser.add_argument(
+        "--table",
+        default=os.environ.get("SESSIONS_TABLE", "ChatSessions"),
+        help="Table name (default: SESSIONS_TABLE or ChatSessions).",
+    )
+    parser.add_argument(
+        "--region",
+        default=os.environ.get("AWS_REGION", "us-east-1"),
+        help="AWS region (default: AWS_REGION or us-east-1).",
+    )
+    args = parser.parse_args()
+
+    endpoint_url = "http://localhost:8000" if args.local else args.endpoint_url
+
+    if endpoint_url:
+        # DynamoDB Local ignores credentials, but botocore still requires them.
+        os.environ.setdefault("AWS_ACCESS_KEY_ID", "local")
+        os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "local")
+
+    print(f"Creating table '{args.table}' in {endpoint_url or f'AWS {args.region}'}")
+    create_session_table(
+        table_name=args.table,
+        region=args.region,
+        endpoint_url=endpoint_url,
+    )
